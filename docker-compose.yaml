@@ -1,0 +1,10 @@
+services:
+  stable-audio-controlnet:
+    build: .
+    container_name: stable-audio-controlnet
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    tty: true
+    stdin_open: true

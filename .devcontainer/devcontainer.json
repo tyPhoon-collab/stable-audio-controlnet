@@ -1,0 +1,25 @@
+{
+    "name": "Stable Audio ControlNet",
+    "dockerComposeFile": "../docker-compose.yaml",
+    "service": "stable-audio-controlnet",
+    "workspaceFolder": "/app",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.shell.linux": "/bin/bash"
+            },
+            "extensions": [
+                "ms-python.python",
+                "charliermarsh.ruff",
+                "streetsidesoftware.code-spell-checker",
+                "usernamehw.errorlens",
+                "mosapride.zenkaku",
+                "shardulm94.trailing-spaces",
+                "sukumo28.wav-preview",
+                "ms-azuretools.vscode-docker",
+                "ms-toolsai.jupyter"
+            ]
+        }
+    },
+    "overrideCommand": true
+}
