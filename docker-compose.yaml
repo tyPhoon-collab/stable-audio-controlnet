@@ -4,6 +4,7 @@ services:
     container_name: stable-audio-controlnet
     volumes:
       - .:/app
+      - /Volumes:/Volumes
     environment:
       - PYTHONUNBUFFERED=1
       - HF_TOKEN=${HF_TOKEN}
