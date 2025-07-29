@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     build-essential \
+    libsox-dev \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 

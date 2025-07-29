@@ -12,3 +12,6 @@ hydra-colorlog
 pytorch-lightning==2.1.0
 bitsandbytes
 huggingface_hub[cli]
+
+# For T5EncoderModel
+soxr
