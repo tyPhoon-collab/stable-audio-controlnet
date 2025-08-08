@@ -5,10 +5,11 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 import webdataset as wds
-from annotation import ChordAnnotation
 from torch.utils.data import DataLoader
 from torchaudio.functional import resample
 from webdataset.autodecode import torch_audio
+
+from .annotation import ChordAnnotation
 
 
 def _fn_resample(sample, sample_rate):

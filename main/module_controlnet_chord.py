@@ -2,6 +2,7 @@ from typing import List, Optional
 
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger
 from stable_audio_tools.inference.generation import generate_diffusion_cond
@@ -36,7 +37,7 @@ class Model(pl.LightningModule):
         self.diffusion_objective = "v"
         model, model_config = get_pretrained_controlnet_model(
             "stabilityai/stable-audio-open-1.0",
-            controlnet_types=["audio"],
+            controlnet_types=["chord"],
             depth_factor=depth_factor,
         )
         self.model_config = model_config
@@ -63,8 +64,61 @@ class Model(pl.LightningModule):
         )
         return optimizer
 
+    def _chord_to_onehot(self, chord_batch: torch.Tensor) -> torch.Tensor:
+        """
+        chord_batch: (B, T_frames, 3) with values [root, quality, inversion]
+          root: -1 (N) or 0..11
+          quality: -1 (N) or 0..8
+          inversion: 0..6 or others (treated as unknown)
+        returns: (B, 31, T_frames) one-hot channels [13 root, 10 quality, 8 inversion]
+        """
+        B, T, _ = chord_batch.shape
+        device = chord_batch.device
+
+        root = chord_batch[..., 0].clone()
+        qual = chord_batch[..., 1].clone()
+        inv = chord_batch[..., 2].clone()
+
+        # Map -1 to last index in its group
+        root_idx = torch.where(
+            root >= 0, root, torch.full_like(root, 12)
+        )  # 0..11, 12 for N
+        qual_idx = torch.where(
+            qual >= 0, qual, torch.full_like(qual, 9)
+        )  # 0..8, 9 for N
+        # inversion: 0..6 valid, others -> 7
+        inv_idx = torch.where((inv >= 0) & (inv <= 6), inv, torch.full_like(inv, 7))
+
+        C_root, C_qual, C_inv = 13, 10, 8
+        C_total = C_root + C_qual + C_inv
+        out = torch.zeros((B, C_total, T), device=device, dtype=torch.float32)
+
+        # scatter for each group
+        # root
+        out_root = out[:, 0:C_root]
+        out_root.zero_()
+        out_root.scatter_(1, root_idx.long().unsqueeze(1), 1.0)
+
+        # quality
+        out_qual = out[:, C_root : C_root + C_qual]
+        out_qual.zero_()
+        out_qual.scatter_(1, qual_idx.long().unsqueeze(1), 1.0)
+
+        # inversion
+        out_inv = out[:, C_root + C_qual :]
+        out_inv.zero_()
+        out_inv.scatter_(1, inv_idx.long().unsqueeze(1), 1.0)
+
+        return out
+
     def step(self, batch):
-        x, y, prompts, start_seconds, total_seconds = batch
+        # Support both collate variants: mix (5-tuple) and conditional (6-tuple)
+        if len(batch) == 5:
+            x, prompts, start_seconds, total_seconds, chord_batch = batch
+        elif len(batch) == 6:
+            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+        else:
+            raise ValueError("Unexpected batch format for chord training")
 
         diffusion_input = self.model.pretransform.encode(x)
 
@@ -90,6 +144,15 @@ class Model(pl.LightningModule):
         if self.diffusion_objective == "v":
             targets = noise * alphas - diffusion_input * sigmas
 
+        # Prepare chord conditioning: (B, T_frames, 3) -> (B, 31, T_frames) -> upsample to T_samples
+        B = x.shape[0]
+        T_samples = x.shape[-1]
+        if chord_batch.numel() == 0:
+            raise ValueError("Empty chord_batch provided")
+        chord_onehot = self._chord_to_onehot(chord_batch)  # (B, 31, T_frames)
+        # Interpolate to sample length
+        chord_rescaled = F.interpolate(chord_onehot, size=T_samples, mode="nearest")
+
         output = self.model(
             x=noised_inputs,
             t=t.to(self.device),
@@ -99,9 +162,9 @@ class Model(pl.LightningModule):
                         "prompt": prompts[i],
                         "seconds_start": start_seconds[i],
                         "seconds_total": total_seconds[i],
-                        "audio": y[i : i + 1],
+                        "chord": chord_rescaled[i : i + 1],
                     }
-                    for i in range(y.shape[0])
+                    for i in range(B)
                 ],
                 device=self.device,
             ),
@@ -218,17 +281,25 @@ class SampleLogger(Callback):
         if is_train:
             pl_module.eval()
         wandb_logger = get_wandb_logger(trainer).experiment
-        _, y, prompts, start_seconds, total_seconds = batch
-        y = torch.clip(y, -1, 1)
+        # batch may be 5-tuple (mix) or 6-tuple (conditional)
+        if len(batch) == 5:
+            x, prompts, start_seconds, total_seconds, chord_batch = batch
+        else:
+            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+        x = torch.clip(x, -1, 1)
 
-        num_samples = min(self.num_samples, y.shape[0])
+        num_samples = min(self.num_samples, x.shape[0])
+
+        # Prepare chord conditioning for logging
+        chord_onehot = pl_module._chord_to_onehot(chord_batch.to(pl_module.device))
+        chord_rescaled = F.interpolate(chord_onehot, size=x.shape[-1], mode="nearest")
 
         conditioning = [
             {
-                "audio": y[i : i + 1].to(pl_module.device),
                 "prompt": prompts[i],
                 "seconds_start": start_seconds[i],
                 "seconds_total": total_seconds[i],
+                "chord": chord_rescaled[i : i + 1],
             }
             for i in range(num_samples)
         ]
@@ -237,14 +308,14 @@ class SampleLogger(Callback):
             log_wandb_audio_batch(
                 logger=wandb_logger,
                 id=f"true_{i}",
-                samples=y[i : i + 1],
+                samples=x[i : i + 1],
                 sampling_rate=pl_module.sample_rate,
                 caption=f"Prompt: {prompts[i]}",
             )
             log_wandb_audio_spectrogram(
                 logger=wandb_logger,
                 id=f"true_{i}",
-                samples=y[i : i + 1],
+                samples=x[i : i + 1],
                 sampling_rate=pl_module.sample_rate,
                 caption=f"Prompt: {prompts[i]}",
             )
@@ -274,21 +345,6 @@ class SampleLogger(Callback):
                     logger=wandb_logger,
                     id=f"sample_x_{i}",
                     samples=output[i : i + 1],
-                    sampling_rate=pl_module.sample_rate,
-                    caption=f"Sampled in {steps} steps.",
-                )
-
-                log_wandb_audio_batch(
-                    logger=wandb_logger,
-                    id=f"sample_sum_{i}",
-                    samples=output[i : i + 1] + y[i : i + 1],
-                    sampling_rate=pl_module.sample_rate,
-                    caption=f"Sampled in {steps} steps.",
-                )
-                log_wandb_audio_spectrogram(
-                    logger=wandb_logger,
-                    id=f"sample_sum_{i}",
-                    samples=output[i : i + 1] + y[i : i + 1],
                     sampling_rate=pl_module.sample_rate,
                     caption=f"Sampled in {steps} steps.",
                 )
