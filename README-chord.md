@@ -88,6 +88,24 @@ docker exec stable-audio-controlnet \
 
 - Exit Code 137 は OOM Kill の可能性が高いです。Docker のメモリ割り当てを増やしてください（12GB 以上目安）。
 
+
+## 学習（Chord Control）
+
+Chord-conditioned ControlNet は、.lab ファイルから取得した和音アノテーションを使用します。データセットのサンプルキーと一致するトラックごとの和音ラベルフォルダを用意してください。実行例:
+
+```
+PYTHONUNBUFFERED=1 TAG=musdb-controlnet-chord python train.py \
+  exp=train_musdb_controlnet_chord \
+  datamodule.train_dataset.path=data/musdb18hq/train.tar \
+  datamodule.val_dataset.path=data/musdb18hq/test.tar \
+  datamodule.train_dataset.lab_dir=/path/to/chord_lab_dir \
+  datamodule.val_dataset.lab_dir=/path/to/chord_lab_dir
+```
+
+補足:
+- collate はデフォルトで mix（単一出力ミックス）監督です。条件付き in/out stems を使う場合は、exp の YAML で collate を `main.data.dataset_musdb_chord.collate_fn_conditional` に変更してください。
+- 和音ラベルは [root, quality, inversion] のフレーム（25 fps）で与えます。欠損フレームは N（-1）で埋めてください。
+
 ## Conditioning の中身
 
 `main/controlnet/diffusion.py` の `ConditionedControlNetDiffusionModelWrapper` が `controlnet_cond_ids`（本実装だと "chord"）を集約して `controlnet_cond` に渡します。`pretrained.py` で `controlnet_types=["chord"]` を指定すると、pretransform ベースの conditioner が作られ、`{"chord": Tensor(B, C, T_samples)}` を受け付けます。
