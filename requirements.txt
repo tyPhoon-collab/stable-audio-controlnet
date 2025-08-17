@@ -1,3 +1,5 @@
+dotenv
+
 jupyter
 torch
 torchvision
