@@ -91,6 +91,12 @@ def _fn_add_chord_annotations(
     return stems, sr, chord_tensor
 
 
+def _apply_chord_annotations(sample, fn_add_chords):
+    """和音アノテーションを適用するためのモジュールレベル関数"""
+    stems, sr, sample_key = sample
+    return fn_add_chords((stems, sr), sample_key)
+
+
 def _get_slices(src, chunk_dur, chord_frame_rate=25.0):
     for sample in src:
         # 和音アノテーション付きの形式のみサポート
@@ -179,10 +185,10 @@ def create_musdb_dataset_with_chords(
         lab_dir=lab_dir,
     )
 
-    # 和音アノテーションを追加する関数
-    def apply_chord_annotations(sample):
-        stems, sr, sample_key = sample
-        return fn_add_chords((stems, sr), sample_key)
+    # 和音アノテーションを追加する関数をpartialで作成
+    apply_chord_annotations = partial(
+        _apply_chord_annotations, fn_add_chords=fn_add_chords
+    )
 
     # create datapipeline
     dataset = (
