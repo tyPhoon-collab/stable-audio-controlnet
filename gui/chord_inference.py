@@ -24,6 +24,7 @@ class ChordInferenceEngine:
         self.model_config = None
         self.sample_rate = 44100
         self.sample_size = None
+        self.chord_frame_rate = 24.0  # デフォルト値
         self.chord_annotation = ChordAnnotation(sample_rate=self.sample_rate)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._loaded = False
@@ -62,10 +63,17 @@ class ChordInferenceEngine:
             self.sample_size = self.model.sample_size
             self.model_config = self.model.model_config
 
+            # 設定からchord_frame_rateを取得
+            if hasattr(cfg, "chord_frame_rate"):
+                self.chord_frame_rate = cfg.chord_frame_rate
+            else:
+                self.chord_frame_rate = 24.0  # デフォルト値
+
             self._loaded = True
             print("✅ モデル読み込み完了")
             print(f"   - Sample Rate: {self.sample_rate}")
             print(f"   - Sample Size: {self.sample_size}")
+            print(f"   - Chord Frame Rate: {self.chord_frame_rate}")
             print(f"   - Device: {self.device}")
 
         except Exception as e:
@@ -80,7 +88,6 @@ class ChordInferenceEngine:
         self,
         chord_sequence: List[List],
         total_duration: float,
-        frame_rate: float = 100.0,
     ) -> torch.Tensor:
         """
         コードシーケンスをテンソルに変換
@@ -88,12 +95,11 @@ class ChordInferenceEngine:
         Args:
             chord_sequence: [[root, quality, inversion, duration], ...] のリスト
             total_duration: 総時間（秒）
-            frame_rate: フレームレート
 
         Returns:
             shape: (num_frames, 3) の tensor [root, quality, inversion]
         """
-        num_frames = int(total_duration * frame_rate)
+        num_frames = int(total_duration * self.chord_frame_rate)
         chord_tensor = torch.full((num_frames, 3), -1, dtype=torch.long)
 
         current_time = 0.0
@@ -102,8 +108,8 @@ class ChordInferenceEngine:
             root = self.chord_annotation.CHORD_ROOT_MAP.get(root_str, -1)
             quality = self.chord_annotation.CHORD_QUALITY_MAP.get(quality_str, -1)
 
-            start_frame = int(current_time * frame_rate)
-            end_frame = int((current_time + duration) * frame_rate)
+            start_frame = int(current_time * self.chord_frame_rate)
+            end_frame = int((current_time + duration) * self.chord_frame_rate)
 
             # フレーム範囲のクリッピング
             start_frame = max(0, min(start_frame, num_frames))
@@ -185,7 +191,7 @@ class ChordInferenceEngine:
         # 総時間計算
         total_duration = sum(chord[3] for chord in chord_sequence)
 
-        # コードシーケンスをテンソルに変換
+        # コードシーケンスをテンソルに変換（設定されたchord_frame_rateを使用）
         chord_tensor = self._chord_sequence_to_tensor(
             chord_sequence, total_duration
         ).unsqueeze(0)  # バッチ次元追加
@@ -213,6 +219,8 @@ class ChordInferenceEngine:
         print(f"   - 総時間: {total_duration:.2f}秒")
         print(f"   - コード数: {len(chord_sequence)}")
         print(f"   - プロンプト: {params['prompt']}")
+        print(f"   - 音声サンプルレート: {self.sample_rate}Hz")
+        print(f"   - コードフレームレート: {self.chord_frame_rate}Hz")
 
         # 音楽生成
         with torch.no_grad():
@@ -255,6 +263,7 @@ class ChordInferenceEngine:
             ],
             "parameters": params,
             "sample_rate": self.sample_rate,
+            "chord_frame_rate": self.chord_frame_rate,
             "audio_length": len(audio),
             "device": str(self.device),
         }

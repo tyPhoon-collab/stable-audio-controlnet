@@ -42,7 +42,7 @@ def main():
             lab_dir=args.lab_dir,
             chunk_dur=args.chunk_dur,
             shardshuffle=False,
-            chord_frame_rate=25.0,
+            chord_frame_rate=24.0,
         )
         loader = DataLoader(
             ds,
