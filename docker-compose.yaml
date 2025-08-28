@@ -1,53 +1,25 @@
+secrets:
+  hf_token:
+    environment: "HF_TOKEN"
+
 services:
   stable-audio-controlnet:
     build: .
-    container_name: stable-audio-controlnet
     volumes:
-      - .:/app
-      - /Volumes:/Volumes
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HF_TOKEN=${HF_TOKEN}
-    tty: true
-    stdin_open: true
-
-  gui:
-    build:
-      context: .
-      dockerfile: gui/Dockerfile
-    container_name: stable-audio-controlnet-gui
-    ports:
-      - "7860:7860"
-    volumes:
-      - .:/app
-      - /Volumes:/Volumes
+      - ./main:/app/main:ro
+      - ./scripts:/app/scripts:ro
       - ./ckpts:/app/ckpts
       - ./data:/app/data
+      - ./exp:/app/exp:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./train.py:/app/train.py:ro
+      - ./eval.py:/app/eval.py:ro
+      - ./logs:/app/logs
+      - ./out:/app/out
     environment:
       - PYTHONUNBUFFERED=1
       - HF_TOKEN=${HF_TOKEN}
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
-    restart: unless-stopped
-
-  gui-gpu:
-    build:
-      context: .
-      dockerfile: gui/Dockerfile
-    container_name: stable-audio-controlnet-gui-gpu
-    ports:
-      - "7860:7860"
-    volumes:
-      - .:/app
-      - /Volumes:/Volumes
-      - ./ckpts:/app/ckpts
-      - ./data:/app/data
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HF_TOKEN=${HF_TOKEN}
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
-      - CUDA_VISIBLE_DEVICES=0
+    user: "1000:1000"
     deploy:
       resources:
         reservations:
@@ -55,5 +27,55 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    restart: unless-stopped
-    profiles: ["gpu"]
+    tty: true
+    stdin_open: true
+
+  gui:
+    build:
+      context: .
+      dockerfile: gui/Dockerfile
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - ./main:/app/main:ro
+      - ./gui:/app/gui:ro
+      - ./ckpts:/app/ckpts:ro
+      - ./data:/app/data:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./exp:/app/exp:ro
+      - ./out:/app/out
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HF_TOKEN=${HF_TOKEN}
+      - GRADIO_SERVER_NAME=127.0.0.1
+      - GRADIO_SERVER_PORT=7860
+    user: "1000:1000"
+
+  gui-gpu:
+    build:
+      context: .
+      dockerfile: gui/Dockerfile
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - ./main:/app/main:ro
+      - ./gui:/app/gui:ro
+      - ./ckpts:/app/ckpts:ro
+      - ./data:/app/data:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./exp:/app/exp:ro
+      - ./out:/app/out
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HF_TOKEN=${HF_TOKEN}
+      - GRADIO_SERVER_NAME=127.0.0.1
+      - GRADIO_SERVER_PORT=7860
+      - CUDA_VISIBLE_DEVICES=0
+    user: "1000:1000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
