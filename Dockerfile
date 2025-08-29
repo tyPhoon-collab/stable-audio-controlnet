@@ -1,6 +1,11 @@
 FROM python:3.11-slim
 
+ARG USER=docker
+
 WORKDIR /app
+
+RUN useradd -u 1000 -ms /bin/bash ${USER}
+USER ${USER}
 
 RUN apt-get update && apt-get install -y \
     ffmpeg \
