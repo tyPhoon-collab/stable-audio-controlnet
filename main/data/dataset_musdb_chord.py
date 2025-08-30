@@ -203,7 +203,11 @@ def create_musdb_dataset_with_chords(
     return dataset
 
 
-def collate_fn_conditional(samples, drop_vocals=True):
+def collate_fn_conditional(
+    samples,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
     """和音アノテーション付きのcollate関数"""
     # 和音アノテーション付きの形式のみサポート
     start_seconds = [x for _, _, x, _ in samples]
@@ -232,8 +236,6 @@ def collate_fn_conditional(samples, drop_vocals=True):
     for i, sample in enumerate(samples):
         stem_keys = list(sample.keys())
         in_indices, out_indices = subsets_in[i], subsets_out[i]
-        in_stems_prompt = [stem_keys[i] for i in in_indices]
-        out_stems_prompt = [stem_keys[i] for i in out_indices]
         in_track = torch.stack([sample[stem_keys[i]] for i in in_indices]).sum(
             dim=0, keepdim=True
         )
@@ -242,9 +244,14 @@ def collate_fn_conditional(samples, drop_vocals=True):
         )
         outputs.append(out_track)
         inputs.append(in_track)
-        prompts.append(
-            f"in: {', '.join(in_stems_prompt)}; out: {', '.join(out_stems_prompt)}"
-        )
+        if prompt_text is None:
+            in_stems_prompt = [stem_keys[j] for j in in_indices]
+            out_stems_prompt = [stem_keys[j] for j in out_indices]
+            prompts.append(
+                f"in: {', '.join(in_stems_prompt)}; out: {', '.join(out_stems_prompt)}"
+            )
+        else:
+            prompts.append(prompt_text)
 
     chord_batch = torch.stack(chord_chunks)
     return (
@@ -257,7 +264,11 @@ def collate_fn_conditional(samples, drop_vocals=True):
     )
 
 
-def collate_fn_mix(samples, drop_vocals=True):
+def collate_fn_mix(
+    samples,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
     """和音アノテーション付きのmix collate関数"""
     # 和音アノテーション付きの形式のみサポート
     start_seconds = [x for _, _, x, _ in samples]
@@ -277,14 +288,13 @@ def collate_fn_mix(samples, drop_vocals=True):
         stem_keys = list(sample.keys())
         out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
         outputs.append(out_track)
-        prompts.append(f"out: {', '.join(stem_keys)}")
+        if prompt_text is None:
+            prompts.append(f"out: {', '.join(stem_keys)}")
+        else:
+            prompts.append(prompt_text)
 
     chord_batch = torch.stack(chord_chunks)
     return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)
-
-
-# 後方互換性のためのエイリアス（削除）
-create_musdb_dataset = create_musdb_dataset_with_chords
 
 
 if __name__ == "__main__":
