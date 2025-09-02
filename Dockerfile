@@ -2,9 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN useradd -u 1000 -ms /bin/bash ${USER}
-USER ${USER}
-
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -16,5 +13,3 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt ./
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
-
-ARG USER=docker
