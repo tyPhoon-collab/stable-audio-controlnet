@@ -2,29 +2,19 @@ import os
 
 import hydra
 import torch
+import torch.nn.functional as F
 import torchaudio
 from stable_audio_tools.inference.generation import generate_diffusion_cond
+
+from main.data.annotation import ChordAnnotation
 
 
 def main():
     print("[INFO] 設定値の初期化")
     seed = 42
     num_samples = 2
-    exp_cfg = "train_musdb_controlnet_audio"
-    ckpt_path = "'/Volumes/Untitled/ckpts/epoch=192-valid_loss=0.418.ckpt'"
-    dataset_path = "/Volumes/Untitled/data/musdb18hq"
-
-    # パスの存在チェック
-    ckpt_path_check = ckpt_path.strip("'")
-    if os.path.isfile(ckpt_path_check):
-        print(f"[CHECK] チェックポイントファイル存在: {ckpt_path_check}")
-    else:
-        print(f"[WARNING] チェックポイントファイルが存在しません: {ckpt_path_check}")
-
-    if os.path.isdir(dataset_path):
-        print(f"[CHECK] データセットディレクトリ存在: {dataset_path}")
-    else:
-        print(f"[WARNING] データセットディレクトリが存在しません: {dataset_path}")
+    exp_cfg = "train_musdb_controlnet_chord"
+    ckpt_path = "ckpts/best.ckpt"
 
     print("[INFO] hydraで設定ファイルを読み込み")
     with hydra.initialize(config_path=".", version_base=None):
@@ -32,8 +22,10 @@ def main():
             config_name="config",
             overrides=[
                 f"exp={exp_cfg}",
-                f"datamodule.val_dataset.path={dataset_path}/test.tar",
-                f"datamodule.train_dataset.path={dataset_path}/train.tar",
+                "datamodule.val_dataset.path=data/musdb18hq/test.tar",
+                "datamodule.train_dataset.path=data/musdb18hq/train.tar",
+                "datamodule.train_dataset.lab_dir=data/musdb_chord_mixed",
+                "datamodule.val_dataset.lab_dir=data/musdb_chord_mixed_test",
             ],
         )
 
@@ -52,16 +44,21 @@ def main():
     val_dataloader = datamodule.val_dataloader()
 
     print("[INFO] バリデーションデータの取得とconditioningの作成")
-    _, y, prompts, start_seconds, total_seconds = next(iter(val_dataloader))
-    y = torch.clip(y, -1, 1)
-    num_samples = min(num_samples, y.shape[0])
+    x, prompts, start_seconds, total_seconds, chord_batch = next(iter(val_dataloader))
+    x = torch.clip(x, -1, 1)
+
+    num_samples = min(num_samples, x.shape[0])
+
+    # Prepare chord conditioning for logging
+    chord_onehot = model._chord_to_onehot(chord_batch.to(model.device))
+    chord_rescaled = F.interpolate(chord_onehot, size=x.shape[-1], mode="nearest")
 
     conditioning = [
         {
-            "audio": y[i : i + 1].cuda(),
             "prompt": prompts[i],
             "seconds_start": start_seconds[i],
             "seconds_total": total_seconds[i],
+            "chord": chord_rescaled[i : i + 1],
         }
         for i in range(num_samples)
     ]
@@ -74,7 +71,7 @@ def main():
         steps=100,
         cfg_scale=7.0,
         conditioning=conditioning,
-        sample_size=y.shape[-1],
+        sample_size=x.shape[-1],
         sigma_min=0.3,
         sigma_max=500,
         sampler_type="dpmpp-3m-sde",
@@ -85,19 +82,41 @@ def main():
     if "out" not in os.listdir():
         os.mkdir("out")
 
+    chord_annotation = ChordAnnotation(sample_rate=44100)
+
     for i in range(num_samples):
         prompt = prompts[i].replace(" ", "")
         torchaudio.save(
-            f"out/input_{i}_prompt_{prompt}.wav", y[i].cpu(), sample_rate=44100
-        )
-        torchaudio.save(
             f"out/output_{i}_prompt_{prompt}.wav", output[i].cpu(), sample_rate=44100
         )
-        torchaudio.save(
-            f"out/mix_{i}_prompt_{prompt}.wav",
-            y[i].cpu() + output[i].cpu(),
-            sample_rate=44100,
+
+        start_s = float(
+            start_seconds[i].item()
+            if torch.is_tensor(start_seconds[i])
+            else start_seconds[i]
         )
+        total_s = float(
+            total_seconds[i].item()
+            if torch.is_tensor(total_seconds[i])
+            else total_seconds[i]
+        )
+        chord_tensor_i = chord_batch[i].cpu()
+
+        lines = []
+        lines.append(f"prompt: {prompts[i]}")
+        lines.append(f"start_seconds: {start_s}")
+        lines.append(f"total_seconds: {total_s}")
+        lines.append(f"seed: {seed}")
+        lines.append("---")
+        lines.append(
+            chord_annotation.chord_timeline_text(
+                chord_tensor_i, start_s=start_s, total_s=total_s
+            )
+        )
+
+        txt_path = f"out/output_{i}_prompt_{prompt}.txt"
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
     print("[INFO] 全処理完了")
 
 

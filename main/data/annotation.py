@@ -44,6 +44,34 @@ class ChordAnnotation:
         "N": -1,
     }
 
+    # 逆変換用の正規化名（出力表記のための代表名）
+    ROOT_NAMES = [
+        "C",
+        "C#",
+        "D",
+        "D#",
+        "E",
+        "F",
+        "F#",
+        "G",
+        "G#",
+        "A",
+        "A#",
+        "B",
+    ]
+
+    QUALITY_NAMES = [
+        "maj",
+        "min",
+        "maj7",
+        "min7",
+        "7",
+        "dim",
+        "aug",
+        "sus4",
+        "sus2",
+    ]
+
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
 
@@ -81,6 +109,74 @@ class ChordAnnotation:
         quality = self.CHORD_QUALITY_MAP.get(quality_str, 0)
 
         return (root, quality, inversion)
+
+    def idx_to_chord_symbol(self, root: int, quality: int, inversion: int) -> str:
+        """数値表現 (root, quality, inversion) を 'C:maj/0' 形式に変換"""
+        if root < 0 or quality < 0:
+            return "N"
+        root_name = self.ROOT_NAMES[root % 12]
+        qual_name = (
+            self.QUALITY_NAMES[quality]
+            if 0 <= quality < len(self.QUALITY_NAMES)
+            else "maj"
+        )
+        symbol = f"{root_name}:{qual_name}"
+        if inversion and inversion > 0:
+            symbol += f"/{inversion}"
+        return symbol
+
+    def chord_timeline_text(
+        self,
+        chord_tensor: torch.Tensor,
+        start_s: float = 0.0,
+        total_s: Optional[float] = None,
+        frame_rate: Optional[float] = None,
+    ) -> str:
+        """
+        和音テンソル (T_frames, 3) を可読なタイムライン文字列に整形。
+
+        引数:
+            chord_tensor: (T, 3) [root, quality, inversion]
+            start_s: 区間の開始秒
+            total_s: 区間の総秒（frame_rate 未指定時に推定に使用）
+            frame_rate: 明示のフレームレート（優先して使用）
+
+        返り値:
+            譜面風のタイムライン文字列
+        """
+        if chord_tensor.ndim != 2 or chord_tensor.shape[1] != 3:
+            return "(no chord data)"
+
+        T = chord_tensor.shape[0]
+        if frame_rate is None:
+            if total_s is not None and total_s > 0:
+                frame_rate_eff = T / float(total_s)
+            else:
+                frame_rate_eff = 1.0
+        else:
+            frame_rate_eff = float(frame_rate)
+
+        lines = []
+        t = 0
+        while t < T:
+            r, q, v = chord_tensor[t].tolist()
+            sym = self.idx_to_chord_symbol(int(r), int(q), int(v))
+            seg_start = t
+            t += 1
+            while t < T:
+                r2, q2, v2 = chord_tensor[t].tolist()
+                if self.idx_to_chord_symbol(int(r2), int(q2), int(v2)) != sym:
+                    break
+                t += 1
+            s_time = start_s + seg_start / frame_rate_eff
+            e_time = start_s + t / frame_rate_eff
+            lines.append(f"{s_time:8.3f} - {e_time:8.3f} : {sym}")
+
+        header = [
+            f"chord_frame_rate_estimate: {frame_rate_eff:.3f} Hz",
+            f"frames: {T}",
+        ]
+        return "\n".join(header + ["chords:"] + lines)
 
     def load_lab_file(self, lab_file_path: str) -> List[Tuple[float, float, str]]:
         """
