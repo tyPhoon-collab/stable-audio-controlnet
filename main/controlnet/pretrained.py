@@ -70,10 +70,12 @@ def get_pretrained_controlnet_model(
     for controlnet_type in controlnet_types:
         if controlnet_type in ["audio", "envelope", "chroma", "chord"]:
             state_dict_pretransform = {
-                k: v for k, v in state_dict.items() if k.startswith("pretransform.")
+                k[len("pretransform.") :]: v
+                for k, v in state_dict.items()
+                if k.startswith("pretransform.")
             }
             model.conditioner.conditioners[controlnet_type].load_state_dict(
-                state_dict_pretransform
+                state_dict_pretransform, strict=False
             )
 
     return model, model_config
