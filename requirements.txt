@@ -17,3 +17,14 @@ huggingface_hub[cli]
 
 # For T5EncoderModel
 soxr
+
+# For audio analysis
+librosa
+matplotlib
+numpy
+
+# For music visualization and analysis
+mir_eval
+seaborn
+plotly
+pandas

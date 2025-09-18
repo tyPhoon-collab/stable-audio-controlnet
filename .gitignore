@@ -13,3 +13,4 @@ script/*
 ckpts/*
 notebook/out*
 notebook/_*.ipynb
+out
