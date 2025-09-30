@@ -41,9 +41,8 @@ datamodule:
   batch_size_train: 1
   batch_size_val: 1
   collate_fn:
-    _target_: main.data.dataset_musdb_chord.collate_fn_genre
+    _target_: main.data.dataset_musdb_chord.collate_fn_mix
     _partial_: True
-    csv_path: "/app/data/tracklist.csv"
   drop_last: True
   num_workers: 4
   pin_memory: True
