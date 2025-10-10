@@ -3,7 +3,7 @@
 train: True
 sample_rate: 44100
 chunk_dur: 47.55446713
-chord_frame_rate: 24.0
+chord_frame_rate: 4.0
 
 log_every_n_steps: 1000
 
@@ -16,6 +16,9 @@ model:
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
   depth_factor: 0.2
+  # chord_layer_type: "embedding"  # "onehot" or "embedding"
+  chord_layer_type: "onehot"  # "onehot" or "embedding"
+  chord_embed_dim: 32  # 16, 32, 64, 128 (embedding時のみ使用)
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule

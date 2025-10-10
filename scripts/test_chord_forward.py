@@ -32,6 +32,12 @@ def main():
         action="store_true",
         help="Skip heavy transformer forward; validate pretransform & conditioning only",
     )
+    p.add_argument(
+        "--chord-layer-type",
+        type=str,
+        default="embedding",
+        choices=["onehot", "embedding"],
+    )
     args = p.parse_args()
 
     try:
@@ -64,6 +70,7 @@ def main():
             lr_weight_decay=0.0,
             depth_factor=args.depth_factor,
             cfg_dropout_prob=0.1,
+            chord_layer_type=args.chord_layer_type,
         )
         model.eval()
 
