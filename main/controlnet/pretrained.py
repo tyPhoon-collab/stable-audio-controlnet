@@ -26,7 +26,7 @@ def get_pretrained_controlnet_model(
 
     model_config["model"]["diffusion"]["controlnet_cond_ids"] = []
     for controlnet_type in controlnet_types:
-        if controlnet_type in ["audio", "envelope", "chroma", "chord"]:
+        if controlnet_type in ["audio", "envelope", "chroma"]:
             controlnet_conditioner_config = {
                 "id": controlnet_type,
                 "type": "pretransform",
@@ -41,9 +41,11 @@ def get_pretrained_controlnet_model(
             model_config["model"]["conditioning"]["configs"].append(
                 controlnet_conditioner_config
             )
-            model_config["model"]["diffusion"]["controlnet_cond_ids"].append(
-                controlnet_type
-            )
+
+        # ここで指定されているidの制御はControlNetに入る
+        model_config["model"]["diffusion"]["controlnet_cond_ids"].append(
+            controlnet_type
+        )
 
     model = create_model_from_config(model_config)
 
@@ -68,7 +70,7 @@ def get_pretrained_controlnet_model(
     model.model.controlnet.load_state_dict(state_dict_controlnet, strict=False)
 
     for controlnet_type in controlnet_types:
-        if controlnet_type in ["audio", "envelope", "chroma", "chord"]:
+        if controlnet_type in ["audio", "envelope", "chroma"]:
             state_dict_pretransform = {
                 k[len("pretransform.") :]: v
                 for k, v in state_dict.items()

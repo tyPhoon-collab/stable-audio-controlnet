@@ -2,15 +2,17 @@ from typing import List, Optional
 
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
 from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 from stable_audio_tools.inference.sampling import get_alphas_sigmas
 from torch.utils.data import DataLoader
 
+from main.chord_conditioner import EmbeddingChordConditioner
 from main.controlnet.pretrained import get_pretrained_controlnet_model
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
+
+from .data.annotation import ChordAnnotation
 
 # ================================================================================================
 # MODEL
@@ -20,7 +22,7 @@ from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
 class Model(pl.LightningModule):
     """ControlNet model for chord-conditioned audio generation.
 
-    Supports both OneHot and Embedding representations for chord conditioning.
+    Supports multiple chord representation strategies through pluggable ChordRepresentation classes.
     Memory-optimized for 24GB VRAM training.
     """
 
@@ -35,9 +37,6 @@ class Model(pl.LightningModule):
         # Model parameters
         depth_factor: float,
         cfg_dropout_prob: float,
-        # Chord representation parameters
-        chord_layer_type: str = "onehot",  # "onehot" or "embedding"
-        chord_embed_dim: int = 16,  # 8, 16, 32 (memory-efficient default)
     ):
         super().__init__()
 
@@ -48,10 +47,6 @@ class Model(pl.LightningModule):
         self.lr_eps = lr_eps
         self.lr_weight_decay = lr_weight_decay
 
-        # === Chord Representation Configuration ===
-        self.chord_layer_type = chord_layer_type
-        self.chord_embed_dim = chord_embed_dim
-
         # === Diffusion Configuration ===
         self.timestep_sampler = "logit_normal"
         self.diffusion_objective = "v"
@@ -61,46 +56,34 @@ class Model(pl.LightningModule):
             controlnet_types=["chord"],
             depth_factor=depth_factor,
         )
+        model.conditioner.conditioners["chord"] = EmbeddingChordConditioner()
         self.model_config = model_config
         self.sample_size = model_config["sample_size"]
         self.sample_rate = model_config["sample_rate"]
+        # self.chord_frame_rate = model_config["chord_frame_rate"]
 
         self.model = model
         self.model.model.model.requires_grad_(False)
-        self.model.conditioner.requires_grad_(False)
-        self.model.conditioner.eval()
+        self.model.model.controlnet.requires_grad_(True)
+
+        for cond_id, conditioner in self.model.conditioner.conditioners.items():
+            if cond_id == "chord":
+                conditioner.requires_grad_(True)
+                conditioner.train()
+            else:
+                conditioner.requires_grad_(False)
+                conditioner.eval()
+
         self.model.pretransform.requires_grad_(False)
         self.model.pretransform.eval()
-
-        # Enable gradient checkpointing for long sequences (47+ seconds)
-        if hasattr(self.model.model, 'enable_gradient_checkpointing'):
-            self.model.model.enable_gradient_checkpointing()
-
-        # Initialize chord embedding layers if using embedding mode
-        if self.chord_layer_type == "embedding":
-            self.root_embedding = torch.nn.Embedding(13, self.chord_embed_dim)  # 0-11 + N
-            self.quality_embedding = torch.nn.Embedding(10, self.chord_embed_dim)  # 0-8 + N
-            # inversion_embedding removed for memory efficiency
-
-            # Ultra-lightweight combination layer with non-linearity
-            # Non-linearity allows learning complex interactions between root and quality
-            self.chord_combiner = torch.nn.Sequential(
-                torch.nn.Linear(self.chord_embed_dim * 2, self.chord_embed_dim),
-                torch.nn.SiLU(),  # SiLU (Swish) is memory-efficient and smooth
-            )
-
-            # Initialize embeddings
-            self._init_chord_embeddings()
 
     def configure_optimizers(self):
         params = list(self.model.model.controlnet.parameters())
 
-        # Add embedding parameters if using embedding mode
-        if self.chord_layer_type == "embedding":
-            params.extend(list(self.root_embedding.parameters()))
-            params.extend(list(self.quality_embedding.parameters()))
-            # inversion_embedding removed
-            params.extend(list(self.chord_combiner.parameters()))
+        params.extend(list(self.model.conditioner.conditioners["chord"].parameters()))
+
+        if not params:
+            raise RuntimeError("No trainable parameters found for optimizer setup.")
 
         optimizer = torch.optim.AdamW(
             params,
@@ -110,152 +93,6 @@ class Model(pl.LightningModule):
             weight_decay=self.lr_weight_decay,
         )
         return optimizer
-
-    # === Embedding Initialization ===
-
-    def _init_chord_embeddings(self):
-        """Initialize embeddings with music theory principles."""
-        self._init_root_embeddings()
-        self._init_quality_embeddings()
-
-    def _init_root_embeddings(self):
-        """Initialize root embeddings using circle of fifths.
-
-        Circle of fifths from C: C(0) -> G(7) -> D(2) -> A(9) -> E(4) -> B(11)
-        -> F#(6) -> C#(1) -> G#(8) -> D#(3) -> A#(10) -> F(5) -> back to C
-        """
-        # Circle of fifths starting from C=0
-        circle_of_fifths_from_c = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5]
-
-        for position, note_index in enumerate(circle_of_fifths_from_c):
-            angle = 2 * torch.pi * position / 12
-            if self.chord_embed_dim >= 2:
-                init_vec = torch.zeros(self.chord_embed_dim)
-                init_vec[0] = torch.cos(torch.tensor(angle)) * 0.1
-                init_vec[1] = torch.sin(torch.tensor(angle)) * 0.1
-                if self.chord_embed_dim > 2:
-                    # Small random noise for higher dimensions
-                    init_vec[2:] = torch.randn(self.chord_embed_dim - 2) * 0.01
-                self.root_embedding.weight.data[note_index] = init_vec
-
-        # No chord (N) initialization - zero vector
-        self.root_embedding.weight.data[12] = torch.zeros(self.chord_embed_dim)
-
-    def _init_quality_embeddings(self):
-        """Initialize quality embeddings with musical meanings."""
-        if self.chord_embed_dim >= 2:
-            # Musical quality meanings: [brightness, tension]
-            quality_meanings = torch.tensor([
-                [1.0, 0.0],   # major - bright, stable
-                [-1.0, 0.0],  # minor - dark, stable
-                [0.0, 1.0],   # diminished - neutral, tense
-                [0.0, -1.0],  # augmented - neutral, unstable
-                [0.5, 0.5],   # major7 - bright, sophisticated
-                [-0.5, 0.5],  # minor7 - dark, jazzy
-                [0.8, 0.2],   # dominant7 - very bright, bluesy
-                [0.2, 0.8],   # half-dim - slightly bright, complex
-                [0.0, 0.0],   # sus - neutral
-            ])
-
-            self.quality_embedding.weight.data[:9, :2] = quality_meanings * 0.1
-            if self.chord_embed_dim > 2:
-                self.quality_embedding.weight.data[:9, 2:] = torch.randn(9, self.chord_embed_dim - 2) * 0.01
-        else:
-            torch.nn.init.normal_(self.quality_embedding.weight, std=0.02)
-
-        # No chord quality
-        self.quality_embedding.weight.data[9] = torch.zeros(self.chord_embed_dim)
-
-    # === Chord Representation Conversion ===
-
-    def _chord_to_embedding(self, chord_batch: torch.Tensor) -> torch.Tensor:
-        """
-        Convert chord batch to embedding representation.
-
-        Args:
-            chord_batch: (B, T_frames, 3) [root, quality, inversion]
-                        inversion is ignored for memory efficiency
-
-        Returns:
-            torch.Tensor: (B, chord_embed_dim, T_frames)
-        """
-        B, T, _ = chord_batch.shape
-        device = chord_batch.device
-
-        # Validation
-        if chord_batch.numel() == 0:
-            raise ValueError("Empty chord_batch provided")
-
-        assert chord_batch.shape[-1] == 3, f"Expected chord_batch shape (B, T, 3), got {chord_batch.shape}"
-
-        # Normalize indices (inversion is ignored)
-        root = chord_batch[..., 0].clone()
-        qual = chord_batch[..., 1].clone()
-        # inv = chord_batch[..., 2].clone()  # Not used
-
-        # Map -1 (no chord) to special indices: 12 for root, 9 for quality
-        root_idx = torch.where(root >= 0, root, torch.full_like(root, 12))  # 0..11, 12 for N
-        qual_idx = torch.where(qual >= 0, qual, torch.full_like(qual, 9))   # 0..8, 9 for N
-
-        # Validate index ranges
-        assert root_idx.max() <= 12 and root_idx.min() >= 0, f"Invalid root indices: [{root_idx.min()}, {root_idx.max()}]"
-        assert qual_idx.max() <= 9 and qual_idx.min() >= 0, f"Invalid quality indices: [{qual_idx.min()}, {qual_idx.max()}]"
-
-        # Memory-efficient embedding processing
-        with torch.cuda.amp.autocast(enabled=True):
-            # Embedding lookup (inversion removed)
-            root_emb = self.root_embedding(root_idx.long())      # (B, T, embed_dim)
-            qual_emb = self.quality_embedding(qual_idx.long())   # (B, T, embed_dim)
-
-            # Combine embeddings (2 inputs only)
-            combined = torch.cat([root_emb, qual_emb], dim=-1)  # (B, T, 2*embed_dim)
-            chord_emb = self.chord_combiner(combined)  # (B, T, embed_dim)
-
-        # Transpose to (B, embed_dim, T) for interpolation
-        return chord_emb.transpose(1, 2)
-
-    def _chord_to_onehot(self, chord_batch: torch.Tensor) -> torch.Tensor:
-        """
-        Convert chord batch to one-hot representation.
-
-        Args:
-            chord_batch: (B, T_frames, 3) [root, quality, inversion]
-                        inversion is ignored for memory efficiency
-
-        Returns:
-            torch.Tensor: (B, 23, T_frames) [13 root + 10 quality channels]
-        """
-        B, T, _ = chord_batch.shape
-        device = chord_batch.device
-
-        root = chord_batch[..., 0].clone()
-        qual = chord_batch[..., 1].clone()
-        # inv = chord_batch[..., 2].clone()  # Not used
-
-        # Map -1 to last index in its group
-        root_idx = torch.where(
-            root >= 0, root, torch.full_like(root, 12)
-        )  # 0..11, 12 for N
-        qual_idx = torch.where(
-            qual >= 0, qual, torch.full_like(qual, 9)
-        )  # 0..8, 9 for N
-
-        C_root, C_qual = 13, 10  # inversion removed
-        C_total = C_root + C_qual  # 31 -> 23
-        out = torch.zeros((B, C_total, T), device=device, dtype=torch.float32)
-
-        # scatter for each group
-        # root
-        out_root = out[:, 0:C_root]
-        out_root.zero_()
-        out_root.scatter_(1, root_idx.long().unsqueeze(1), 1.0)
-
-        # quality
-        out_qual = out[:, C_root : C_root + C_qual]
-        out_qual.zero_()
-        out_qual.scatter_(1, qual_idx.long().unsqueeze(1), 1.0)
-
-        return out
 
     def step(self, batch):
         # Support both collate variants: mix (5-tuple) and conditional (6-tuple)
@@ -290,23 +127,6 @@ class Model(pl.LightningModule):
         if self.diffusion_objective == "v":
             targets = noise * alphas - diffusion_input * sigmas
 
-        # === Chord Conditioning Processing ===
-        B, T_samples = x.shape[0], x.shape[-1]
-
-        if chord_batch.numel() == 0:
-            raise ValueError("Empty chord_batch provided")
-
-        # Convert and interpolate chord representation
-        with torch.cuda.amp.autocast(enabled=True):
-            if self.chord_layer_type == "embedding":
-                chord_representation = self._chord_to_embedding(chord_batch)  # (B, chord_embed_dim, T_frames)
-                chord_rescaled = F.interpolate(chord_representation, size=T_samples, mode="linear", align_corners=False)
-            elif self.chord_layer_type == "onehot":
-                chord_representation = self._chord_to_onehot(chord_batch)  # (B, 23, T_frames)
-                chord_rescaled = F.interpolate(chord_representation, size=T_samples, mode="nearest")
-            else:
-                raise ValueError(f"Unsupported chord_layer_type: {self.chord_layer_type}. Supported types are 'onehot' and 'embedding'.")
-
         output = self.model(
             x=noised_inputs,
             t=t.to(self.device),
@@ -316,9 +136,12 @@ class Model(pl.LightningModule):
                         "prompt": prompts[i],
                         "seconds_start": start_seconds[i],
                         "seconds_total": total_seconds[i],
-                        "chord": chord_rescaled[i : i + 1],
+                        "chord": {
+                            "data": chord_batch[i],
+                            "target_size": diffusion_input.shape[-1],
+                        },
                     }
-                    for i in range(B)
+                    for i in range(x.shape[0])
                 ],
                 device=self.device,
             ),
@@ -345,6 +168,7 @@ class Model(pl.LightningModule):
 
 class WebDatasetDatamodule(pl.LightningDataModule):
     """WebDataset-based DataModule for chord conditioning training."""
+
     def __init__(
         self,
         train_dataset,
@@ -421,11 +245,16 @@ class SampleLogger(Callback):
     """Callback for logging generated audio samples during validation."""
 
     def __init__(
-        self, sampling_steps: List[int], cfg_scale: float, num_samples: int = 1
+        self,
+        sampling_steps: List[int],
+        cfg_scale: float,
+        num_samples: int = 1,
+        frame_rate: int = 30,
     ) -> None:
         self.sampling_steps = sampling_steps
         self.cfg_scale = cfg_scale
         self.num_samples = num_samples
+        self.frame_rate = frame_rate
         self.log_next = False
 
     def on_validation_epoch_start(self, trainer, pl_module):
@@ -451,23 +280,16 @@ class SampleLogger(Callback):
 
         num_samples = min(self.num_samples, x.shape[0])
 
-        # === Chord Conditioning for Sampling ===
-        with torch.cuda.amp.autocast(enabled=True):
-            if pl_module.chord_layer_type == "embedding":
-                chord_representation = pl_module._chord_to_embedding(chord_batch.to(pl_module.device))
-                chord_rescaled = F.interpolate(chord_representation, size=x.shape[-1], mode="linear", align_corners=False)
-            elif pl_module.chord_layer_type == "onehot":
-                chord_representation = pl_module._chord_to_onehot(chord_batch.to(pl_module.device))
-                chord_rescaled = F.interpolate(chord_representation, size=x.shape[-1], mode="nearest")
-            else:
-                raise ValueError(f"Unsupported chord_layer_type: {pl_module.chord_layer_type}. Supported types are 'onehot' and 'embedding'.")
-
         conditioning = [
             {
                 "prompt": prompts[i],
                 "seconds_start": start_seconds[i],
                 "seconds_total": total_seconds[i],
-                "chord": chord_rescaled[i : i + 1],
+                "chord": {
+                    "data": chord_batch[i],
+                    "target_size": x.shape[-1]
+                    // pl_module.model.pretransform.downsampling_ratio,
+                },
             }
             for i in range(num_samples)
         ]
@@ -488,6 +310,8 @@ class SampleLogger(Callback):
                 caption=f"Prompt: {prompts[i]}",
             )
 
+        chord_annotation = ChordAnnotation(pl_module.sample_rate)
+
         for steps in self.sampling_steps:
             output = generate_diffusion_cond(
                 pl_module.model,
@@ -502,19 +326,21 @@ class SampleLogger(Callback):
                 device=pl_module.device,
             )
             for i in range(num_samples):
+                caption = f"Prompt: {prompts[i]}. Sampled in {steps} steps. {chord_annotation.chord_timeline_text(chord_batch[i], frame_rate=self.frame_rate)}"
+
                 log_wandb_audio_batch(
                     logger=wandb_logger,
                     id=f"sample_x_{i}",
                     samples=output[i : i + 1],
                     sampling_rate=pl_module.sample_rate,
-                    caption=f"Sampled in {steps} steps.",
+                    caption=caption,
                 )
                 log_wandb_audio_spectrogram(
                     logger=wandb_logger,
                     id=f"sample_x_{i}",
                     samples=output[i : i + 1],
                     sampling_rate=pl_module.sample_rate,
-                    caption=f"Sampled in {steps} steps.",
+                    caption=caption,
                 )
 
         if is_train:

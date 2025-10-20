@@ -1,4 +1,5 @@
 # Instruction
 
 pythonはDockerコンテナ内で実行されることを想定しています。
-`docker-compose.yml`ファイルを参照して、必要なサービスや設定を確認してください。
+pythonスクリプトを実行する場合は、`docker exec -it <コンテナ名> <コマンド>`でコマンドを実行してください。
+無駄なREADMEは省略し、必要なコードだけを提供してください。

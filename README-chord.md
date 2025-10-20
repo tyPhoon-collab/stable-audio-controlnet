@@ -7,12 +7,17 @@
 - 新規・更新ポイント
   - データセット: `main/data/dataset_musdb_chord.py`（.lab から和音テンソルを生成）
   - モデル: `main/module_controlnet_chord.py`（"chord" 条件で ControlNet に供給）
+  - 和音表現: `main/chord_representation.py`（プラグイン可能な表現方法）
   - 事前モデル読み込み: `main/controlnet/pretrained.py`（controlnet_types に "chord" を追加）
   - スクリプト: `scripts/test_chord_dataset.py`, `scripts/test_chord_forward.py`
 - 和音テンソル仕様
-  - 生テンソル: 形状 (T_frames, 3) = [root, quality, inversion]（25 Hz）
-  - one-hot: root(13=12音+N) + quality(10=9種+N) + inversion(8=0..6+unknown) = 合計31チャネル
-  - 学習/推論時: (B, 31, T_frames) を最近傍補間で (B, 31, T_samples) へ拡大し conditioning に投入
+  - 入力テンソル: 形状 (T_frames, 3) = [root, quality, inversion]
+  - 複数の表現方法をサポート:
+    - **SimpleOneHot**: 12音×2質(maj,min)+1(N) = 25ch（**推奨・シンプル**）
+    - OneHot: 13音×10質 = 23ch（フル表現）
+    - Embedding: 学習可能な埋め込み（16次元または8次元）
+    - Simplified: 簡略化された質（4タイプ）
+  - 学習/推論時: (B, C, T_frames) を最近傍補間で (B, C, T_samples) へ拡大し conditioning に投入
 
 ## 依存関係と起動
 
@@ -44,8 +49,8 @@ compose のボリュームマウントは環境に合わせて調整してくだ
 ```bash
 docker exec stable-audio-controlnet \
   python /app/scripts/test_chord_dataset.py \
-  --path /path/to/musdb18hq/train.tar \
-  --lab-dir /path/to/musdb_chord_labs \
+  --path data/musdb18hq/train.tar \
+  --lab-dir data/musdb_chord_labs \
   --chunk-dur 10.0 \
   --batch-size 1 \
   --collate mix
@@ -67,8 +72,8 @@ CPU での forward はメモリ負荷が高いです。GPU 推奨。どうして
 # スモークテスト（重い forward を回さず、前処理と conditioning のみ検証）
 docker exec stable-audio-controlnet \
   python /app/scripts/test_chord_forward.py \
-  --path /path/to/musdb18hq/train.tar \
-  --lab-dir /path/to/musdb_chord_labs \
+  --path data/musdb18hq/train.tar \
+  --lab-dir data/musdb_chord_labs \
   --chunk-dur 2.0 \
   --batch-size 1 \
   --depth-factor 0.1 \
@@ -77,8 +82,8 @@ docker exec stable-audio-controlnet \
 # フル forward（十分なメモリ/推奨GPU）
 docker exec stable-audio-controlnet \
   python /app/scripts/test_chord_forward.py \
-  --path /path/to/musdb18hq/train.tar \
-  --lab-dir /path/to/musdb_chord_labs \
+  --path data/musdb18hq/train.tar \
+  --lab-dir data/musdb_chord_labs \
   --chunk-dur 1.0 \
   --batch-size 1 \
   --depth-factor 0.1
@@ -91,20 +96,47 @@ docker exec stable-audio-controlnet \
 
 ## 学習（Chord Control）
 
-Chord-conditioned ControlNet は、.lab ファイルから取得した和音アノテーションを使用します。データセットのサンプルキーと一致するトラックごとの和音ラベルフォルダを用意してください。実行例:
+### 和音表現の選択
 
+複数の和音表現方法から選択できます:
+
+1. **SimpleOneHot（推奨）**: `exp/train_musdb_controlnet_chord_simple_onehot.yaml`
+   - 12音×2質(maj,min)+1(N) = 25チャンネル
+   - 最もシンプルで効率的
+   - データセット側で和音を(maj, min, N)に簡略化済みであることを想定
+
+2. **Simplified**: `exp/train_musdb_controlnet_chord_simplified.yaml`
+   - 4質タイプ(maj, min, 7, N)に簡略化
+   - データ不足対策として有効
+
+3. **Embedding**: `exp/train_musdb_controlnet_chord_embedding.yaml`
+   - 学習可能な埋め込み（16次元）
+   - Circle of Fifthsで初期化
+
+4. **OneHot**: `exp/train_musdb_controlnet_chord_onehot.yaml`
+   - フル表現（13音×10質）
+   - ベースライン
+
+### 実行例
+
+SimpleOneHot表現を使用した学習:
+
+```bash
+docker exec -it <コンテナ名> python train.py \
+  exp=train_musdb_controlnet_chord_simple_onehot
 ```
-PYTHONUNBUFFERED=1 TAG=musdb-controlnet-chord python train.py \
-  exp=train_musdb_controlnet_chord \
-  datamodule.train_dataset.path=data/musdb18hq/train.tar \
-  datamodule.val_dataset.path=data/musdb18hq/test.tar \
-  datamodule.train_dataset.lab_dir=/path/to/chord_lab_dir \
-  datamodule.val_dataset.lab_dir=/path/to/chord_lab_dir
+
+または従来のフル表現:
+
+```bash
+docker exec -it <コンテナ名> python train.py \
+  exp=train_musdb_controlnet_chord_onehot
 ```
 
 補足:
-- collate はデフォルトで mix（単一出力ミックス）監督です。条件付き in/out stems を使う場合は、exp の YAML で collate を `main.data.dataset_musdb_chord.collate_fn_conditional` に変更してください。
-- 和音ラベルは [root, quality, inversion] のフレーム（25 fps）で与えます。欠損フレームは N（-1）で埋めてください。
+- 和音ラベルは [root, quality, inversion] のフレーム（4 fps）で与えます。
+- SimpleOneHot使用時は、データセット側で quality が 0(maj), 1(min), -1(N) に簡略化されている必要があります。
+- 欠損フレームは N（-1）で埋めてください。
 
 ## Conditioning の中身
 

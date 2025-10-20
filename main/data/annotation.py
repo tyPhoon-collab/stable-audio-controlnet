@@ -100,13 +100,13 @@ class ChordAnnotation:
             root_str, quality_str = chord_symbol.split(":")
         else:
             root_str = chord_symbol
-            quality_str = "maj"  # デフォルトはメジャー
+            quality_str = "N"
 
         # ルート音の取得
         root = self.CHORD_ROOT_MAP.get(root_str, -1)
 
         # 和音の質の取得
-        quality = self.CHORD_QUALITY_MAP.get(quality_str, 0)
+        quality = self.CHORD_QUALITY_MAP.get(quality_str, -1)
 
         return (root, quality, inversion)
 

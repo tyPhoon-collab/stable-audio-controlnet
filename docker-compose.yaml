@@ -32,26 +32,27 @@ services:
     <<: *x-gpu
     tty: true
     stdin_open: true
+    shm_size: "2gb"
 
-  gui:
-    <<: *x-gui
-    volumes:
-      - .:/app
-      - ~/.cache/huggingface:/root/.cache/huggingface
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HF_TOKEN=${HF_TOKEN}
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
+  # gui:
+  #   <<: *x-gui
+  #   volumes:
+  #     - .:/app
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - HF_TOKEN=${HF_TOKEN}
+  #     - GRADIO_SERVER_NAME=0.0.0.0
+  #     - GRADIO_SERVER_PORT=7860
 
-  gui-gpu:
-    <<: [*x-gui, *x-gpu]
-    volumes:
-      - .:/app
-      - ~/.cache/huggingface:/root/.cache/huggingface
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HF_TOKEN=${HF_TOKEN}
-      - GRADIO_SERVER_NAME=0.0.0.0
-      - GRADIO_SERVER_PORT=7860
-      - CUDA_VISIBLE_DEVICES=0
+  # gui-gpu:
+  #   <<: [*x-gui, *x-gpu]
+  #   volumes:
+  #     - .:/app
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - HF_TOKEN=${HF_TOKEN}
+  #     - GRADIO_SERVER_NAME=0.0.0.0
+  #     - GRADIO_SERVER_PORT=7860
+  #     - CUDA_VISIBLE_DEVICES=0

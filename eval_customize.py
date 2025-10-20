@@ -29,16 +29,14 @@ Stable Audio ControlNet カスタム評価スクリプト
 
 import argparse
 import logging
-import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import hydra
 import torch
-import torch.nn.functional as F
 import torchaudio
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
@@ -52,7 +50,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-        ]
+        ],
     )
     return logging.getLogger(__name__)
 
@@ -63,7 +61,7 @@ def parse_chord_progression(chord_string: str) -> List[str]:
     例: "C,Am,F,G" -> ["C", "Am", "F", "G"]
     """
     # 区切り文字で分割（カンマ、スペース、パイプなどに対応）
-    chords = re.split(r'[,|\s]+', chord_string.strip())
+    chords = re.split(r"[,|\s]+", chord_string.strip())
     # 空文字列を除去
     chords = [chord.strip() for chord in chords if chord.strip()]
     return chords
@@ -130,7 +128,7 @@ def create_chord_conditioning(
     chord_progression: Optional[str],
     duration: float,
     sample_rate: int = 44100,
-    logger: logging.Logger = None
+    logger: logging.Logger = None,
 ):
     """コード進行からconditioningを作成"""
     if not chord_progression:
@@ -163,24 +161,15 @@ def create_chord_conditioning(
 
     # コードテンソルを作成
     chord_tensor = chord_annotation.create_chord_tensor(
-        annotations, sample_length, frame_rate=100.0
+        annotations, sample_length, frame_rate=4
     )
 
     logger.info(f"コードテンソル形状: {chord_tensor.shape}")
 
-    # モデルが期待する形式に変換
-    chord_tensor = chord_tensor.unsqueeze(0)  # バッチ次元を追加 (1, T, 3)
-
-    # モデルのワンホット変換メソッドを使用
-    try:
-        chord_onehot = model._chord_to_onehot(chord_tensor.to(model.device))
-        # 音響サンプル長に補間
-        chord_rescaled = F.interpolate(chord_onehot, size=sample_length, mode="nearest")
-        return chord_rescaled[0:1]  # (1, chord_dim, sample_length)
-    except Exception as e:
-        logger.warning(f"コードconditioningの作成中にエラー: {e}")
-        logger.warning("空のconditioningを使用します")
-        return None
+    return {
+        "data": chord_tensor.to(model.device),
+        "target_size": sample_length // model.model.pretransform.downsampling_ratio,
+    }
 
 
 def normalize_chord_symbol(chord: str) -> str:
@@ -236,8 +225,8 @@ def normalize_chord_symbol(chord: str) -> str:
 def generate_safe_filename(prompt: str, index: int) -> str:
     """安全なファイル名を生成"""
     # 特殊文字を除去・置換
-    safe_prompt = re.sub(r'[<>:"/\\|?*]', '_', prompt)
-    safe_prompt = re.sub(r'\s+', '_', safe_prompt)
+    safe_prompt = re.sub(r'[<>:"/\\|?*]', "_", prompt)
+    safe_prompt = re.sub(r"\s+", "_", safe_prompt)
     # 長すぎる場合は切り詰める
     if len(safe_prompt) > 50:
         safe_prompt = safe_prompt[:50]
@@ -250,21 +239,24 @@ def generate_audio(
     chord_conditioning,
     duration: float,
     args: argparse.Namespace,
-    logger: logging.Logger
+    logger: logging.Logger,
 ):
     """音声生成処理"""
     logger.info(f"音声生成中 - プロンプト: '{prompt}', 時間: {duration}秒")
 
     sample_size = int(duration * 44100)  # 44.1kHzでサンプル計算
 
-    conditioning = [{
-        "prompt": prompt,
-        "seconds_start": 0.0,
-        "seconds_total": duration,
-    }]
+    conditioning = [
+        {
+            "prompt": prompt,
+            "seconds_start": 0.0,
+            "seconds_total": duration,
+        }
+    ]
 
     # コード進行のconditioningを追加（利用可能な場合）
     if chord_conditioning is not None:
+        logger.info("コード進行のconditioningを追加")
         conditioning[0]["chord"] = chord_conditioning
 
     logger.info("拡散モデルによる生成を開始...")
@@ -292,7 +284,7 @@ def save_results(
     duration: float,
     args: argparse.Namespace,
     index: int,
-    logger: logging.Logger
+    logger: logging.Logger,
 ):
     """結果の保存"""
     safe_filename = generate_safe_filename(prompt, index)
@@ -351,87 +343,57 @@ def main():
 
     # 必須引数
     parser.add_argument(
-        "--prompt",
-        type=str,
-        required=True,
-        help="音声生成用のテキストプロンプト"
+        "--prompt", type=str, required=True, help="音声生成用のテキストプロンプト"
     )
 
     # オプション引数
     parser.add_argument(
         "--chord-progression",
         type=str,
-        help="コード進行 (例: 'C,Am,F,G' または 'C Am F G')"
+        help="コード進行 (例: 'C,Am,F,G' または 'C Am F G')",
     )
 
     parser.add_argument(
-        "--duration",
-        type=float,
-        default=10.0,
-        help="生成する音声の長さ（秒）"
+        "--duration", type=float, default=10.0, help="生成する音声の長さ（秒）"
     )
 
     parser.add_argument(
         "--checkpoint",
         type=str,
         default="ckpts/best.ckpt",
-        help="モデルのチェックポイントファイルパス"
+        help="モデルのチェックポイントファイルパス",
     )
 
     parser.add_argument(
         "--exp-config",
         type=str,
         default="train_musdb_controlnet_chord",
-        help="実験設定名"
+        help="実験設定名",
     )
 
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="out",
-        help="出力ディレクトリ"
+        "--output-dir", type=str, default="out", help="出力ディレクトリ"
     )
 
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="乱数シード"
-    )
+    parser.add_argument("--seed", type=int, default=42, help="乱数シード")
 
-    parser.add_argument(
-        "--steps",
-        type=int,
-        default=100,
-        help="拡散ステップ数"
-    )
+    parser.add_argument("--steps", type=int, default=100, help="拡散ステップ数")
 
     parser.add_argument(
         "--cfg-scale",
         type=float,
         default=7.0,
-        help="Classifier-free guidanceのスケール"
+        help="Classifier-free guidanceのスケール",
+    )
+
+    parser.add_argument("--sigma-min", type=float, default=0.3, help="最小ノイズレベル")
+
+    parser.add_argument(
+        "--sigma-max", type=float, default=500.0, help="最大ノイズレベル"
     )
 
     parser.add_argument(
-        "--sigma-min",
-        type=float,
-        default=0.3,
-        help="最小ノイズレベル"
-    )
-
-    parser.add_argument(
-        "--sigma-max",
-        type=float,
-        default=500.0,
-        help="最大ノイズレベル"
-    )
-
-    parser.add_argument(
-        "--sampler-type",
-        type=str,
-        default="dpmpp-3m-sde",
-        help="サンプラーの種類"
+        "--sampler-type", type=str, default="dpmpp-3m-sde", help="サンプラーの種類"
     )
 
     parser.add_argument(
@@ -439,7 +401,7 @@ def main():
         type=str,
         default="cuda",
         choices=["cuda", "cpu"],
-        help="使用するデバイス"
+        help="使用するデバイス",
     )
 
     parser.add_argument(
@@ -447,7 +409,7 @@ def main():
         type=str,
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="ログレベル"
+        help="ログレベル",
     )
 
     args = parser.parse_args()
@@ -480,8 +442,13 @@ def main():
 
         # 結果の保存
         save_results(
-            output_audio, args.prompt, args.chord_progression,
-            args.duration, args, 0, logger
+            output_audio,
+            args.prompt,
+            args.chord_progression,
+            args.duration,
+            args,
+            0,
+            logger,
         )
 
         logger.info("=== 生成完了 ===")
