@@ -8,11 +8,9 @@ from stable_audio_tools.inference.generation import generate_diffusion_cond
 from stable_audio_tools.inference.sampling import get_alphas_sigmas
 from torch.utils.data import DataLoader
 
-from main.chord_conditioner import EmbeddingChordConditioner
 from main.controlnet.pretrained import get_pretrained_controlnet_model
+from main.melody_conditioner import EmbeddingMelodyConditioner
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
-
-from .data.annotation import ChordAnnotation
 
 # ================================================================================================
 # MODEL
@@ -20,10 +18,9 @@ from .data.annotation import ChordAnnotation
 
 
 class Model(pl.LightningModule):
-    """ControlNet model for chord-conditioned audio generation.
+    """ControlNet model for melody-conditioned audio generation.
 
-    Supports multiple chord representation strategies through pluggable ChordRepresentation classes.
-    Memory-optimized for 24GB VRAM training.
+    Mirrors the chord-conditioned variant but uses a melody embedding conditioner.
     """
 
     def __init__(
@@ -53,37 +50,37 @@ class Model(pl.LightningModule):
         self.cfg_dropout_prob = cfg_dropout_prob
         model, model_config = get_pretrained_controlnet_model(
             "stabilityai/stable-audio-open-1.0",
-            controlnet_types=["chord"],
+            controlnet_types=["melody"],
             depth_factor=depth_factor,
         )
-        model.conditioner.conditioners["chord"] = EmbeddingChordConditioner()
+        # Replace/add melody conditioner
+        model.conditioner.conditioners["melody"] = EmbeddingMelodyConditioner()
+
         self.model_config = model_config
         self.sample_size = model_config["sample_size"]
         self.sample_rate = model_config["sample_rate"]
-        # self.chord_frame_rate = model_config["chord_frame_rate"]
 
         self.model = model
         self.model.model.model.requires_grad_(False)
         self.model.model.controlnet.requires_grad_(True)
 
+        # Train only melody conditioner
         for cond_id, conditioner in self.model.conditioner.conditioners.items():
-            if cond_id == "chord":
+            if cond_id == "melody":
                 conditioner.requires_grad_(True)
                 conditioner.train()
             else:
                 conditioner.requires_grad_(False)
                 conditioner.eval()
 
-        self.model.pretransform.requires_grad_(False)
-        self.model.pretransform.eval()
+        self.model.pretransform.requires_grad_(False)  # type: ignore[attr-defined]
+        self.model.pretransform.eval()  # type: ignore[attr-defined]
 
     def configure_optimizers(self):
-        params = list(self.model.model.controlnet.parameters())
-        params.extend(list(self.model.conditioner.conditioners["chord"].parameters()))
-
+        params = list(self.model.model.controlnet.parameters())  # type: ignore[attr-defined]
+        params.extend(list(self.model.conditioner.conditioners["melody"].parameters()))
         if not params:
             raise RuntimeError("No trainable parameters found for optimizer setup.")
-
         optimizer = torch.optim.AdamW(
             params,
             lr=self.lr,
@@ -96,17 +93,14 @@ class Model(pl.LightningModule):
     def step(self, batch):
         # Support both collate variants: mix (5-tuple) and conditional (6-tuple)
         if len(batch) == 5:
-            x, prompts, start_seconds, total_seconds, chord_batch = batch
+            x, prompts, start_seconds, total_seconds, melody_batch = batch
         elif len(batch) == 6:
-            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+            x, _y_in, prompts, start_seconds, total_seconds, melody_batch = batch
         else:
-            raise ValueError("Unexpected batch format for chord training")
+            raise ValueError("Unexpected batch format for melody training")
 
         diffusion_input = self.model.pretransform.encode(x)
 
-        # if self.timestep_sampler == "uniform":
-        #     # Draw uniformly distributed continuous timesteps
-        #     # t = self.rng.draw(x.shape[0])[:, 0]
         if self.timestep_sampler == "logit_normal":
             t = torch.sigmoid(torch.randn(x.shape[0]))
         else:
@@ -123,8 +117,8 @@ class Model(pl.LightningModule):
         noise = torch.randn_like(diffusion_input).to(self.device)
         noised_inputs = diffusion_input * alphas + noise * sigmas
 
-        if self.diffusion_objective == "v":
-            targets = noise * alphas - diffusion_input * sigmas
+        # v-objective target
+        targets = noise * alphas - diffusion_input * sigmas
 
         output = self.model(
             x=noised_inputs,
@@ -135,8 +129,8 @@ class Model(pl.LightningModule):
                         "prompt": prompts[i],
                         "seconds_start": start_seconds[i],
                         "seconds_total": total_seconds[i],
-                        "chord": {
-                            "data": chord_batch[i],
+                        "melody": {
+                            "data": melody_batch[i],
                             "target_size": diffusion_input.shape[-1],
                         },
                     }
@@ -166,7 +160,7 @@ class Model(pl.LightningModule):
 
 
 class WebDatasetDatamodule(pl.LightningDataModule):
-    """WebDataset-based DataModule for chord conditioning training."""
+    """WebDataset-based DataModule for melody conditioning training."""
 
     def __init__(
         self,
@@ -248,18 +242,18 @@ class SampleLogger(Callback):
         sampling_steps: List[int],
         cfg_scale: float,
         num_samples: int = 1,
-        frame_rate: int = 30,
     ) -> None:
         self.sampling_steps = sampling_steps
         self.cfg_scale = cfg_scale
         self.num_samples = num_samples
-        self.frame_rate = frame_rate
         self.log_next = False
 
     def on_validation_epoch_start(self, trainer, pl_module):
         self.log_next = True
 
-    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx):
+    def on_validation_batch_start(
+        self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
+    ):
         if self.log_next:
             self.log_sample(trainer, pl_module, batch)
             self.log_next = False
@@ -269,12 +263,15 @@ class SampleLogger(Callback):
         is_train = pl_module.training
         if is_train:
             pl_module.eval()
-        wandb_logger = get_wandb_logger(trainer).experiment
+        logger_wrapper = get_wandb_logger(trainer)
+        if logger_wrapper is None:
+            return
+        wandb_logger = logger_wrapper.experiment
         # batch may be 5-tuple (mix) or 6-tuple (conditional)
         if len(batch) == 5:
-            x, prompts, start_seconds, total_seconds, chord_batch = batch
+            x, prompts, start_seconds, total_seconds, melody_batch = batch
         else:
-            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+            x, _y_in, prompts, start_seconds, total_seconds, melody_batch = batch
         x = torch.clip(x, -1, 1)
 
         num_samples = min(self.num_samples, x.shape[0])
@@ -284,8 +281,8 @@ class SampleLogger(Callback):
                 "prompt": prompts[i],
                 "seconds_start": start_seconds[i],
                 "seconds_total": total_seconds[i],
-                "chord": {
-                    "data": chord_batch[i],
+                "melody": {
+                    "data": melody_batch[i],
                     "target_size": x.shape[-1]
                     // pl_module.model.pretransform.downsampling_ratio,
                 },
@@ -309,15 +306,13 @@ class SampleLogger(Callback):
                 caption=f"Prompt: {prompts[i]}",
             )
 
-        chord_annotation = ChordAnnotation(pl_module.sample_rate)
-
         for steps in self.sampling_steps:
-            output = generate_diffusion_cond(
+            output = generate_diffusion_cond(  # type: ignore[arg-type]
                 pl_module.model,
                 batch_size=num_samples,
                 steps=steps,
-                cfg_scale=self.cfg_scale,
-                conditioning=conditioning,
+                cfg_scale=int(self.cfg_scale),
+                conditioning=conditioning,  # type: ignore[arg-type]
                 sample_size=pl_module.sample_size,
                 sigma_min=0.3,
                 sigma_max=500,
@@ -325,7 +320,7 @@ class SampleLogger(Callback):
                 device=pl_module.device,
             )
             for i in range(num_samples):
-                caption = f"Prompt: {prompts[i]}. Sampled in {steps} steps. {chord_annotation.chord_timeline_text(chord_batch[i], frame_rate=self.frame_rate)}"
+                caption = f"Prompt: {prompts[i]}. Sampled in {steps} steps."
 
                 log_wandb_audio_batch(
                     logger=wandb_logger,

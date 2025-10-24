@@ -3,12 +3,11 @@
 train: True
 sample_rate: 44100
 chunk_dur: 47.55446713
-chord_frame_rate: 4.0
 
 log_every_n_steps: 100
 
 model:
-  _target_: main.module_controlnet_chord.Model
+  _target_: main.module_controlnet_melody.Model
   lr: 1e-5
   lr_beta1: 0.95
   lr_beta2: 0.999
@@ -18,34 +17,49 @@ model:
   depth_factor: 0.2
 
 datamodule:
-  _target_: main.module_controlnet_chord.WebDatasetDatamodule
+  _target_: main.module_controlnet_melody.WebDatasetDatamodule
   train_dataset:
-    _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
-    path: null
+    _target_: main.data.dataset_musdb_melody_cached.create_musdb_dataset_melody_from_cache
+    cache_file: /app/data/melody_cache/train_melody.h5
+    tar_path: /app/data/musdb18hq/train.tar
     sample_rate: ${sample_rate}
-    lab_dir: null
     chunk_dur: ${chunk_dur}
-    chord_frame_rate: ${chord_frame_rate}
-    shardshuffle: True
+    # 元の実装（毎回メロディ計算）:
+    # _target_: main.data.dataset_musdb_melody.create_musdb_dataset_with_melody
+    # path: null
+    # cqt_bins: 128
+    # bins_per_octave: 12
+    # topk: 4
+    # hpf_cutoff_hz: 261.2
+    # magnitude_threshold: 0.1
+    # hop_length: null
+    # shardshuffle: True
 
   val_dataset:
-    _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
-    path: null
+    _target_: main.data.dataset_musdb_melody_cached.create_musdb_dataset_melody_from_cache
+    cache_file: /app/data/melody_cache/test_melody.h5
+    tar_path: /app/data/musdb18hq/test.tar
     sample_rate: ${sample_rate}
-    lab_dir: null
     chunk_dur: ${chunk_dur}
-    chord_frame_rate: ${chord_frame_rate}
-    shardshuffle: False
+    # 元の実装（毎回メロディ計算）:
+    # _target_: main.data.dataset_musdb_melody.create_musdb_dataset_with_melody
+    # path: null
+    # cqt_bins: 128
+    # bins_per_octave: 12
+    # topk: 4
+    # hpf_cutoff_hz: 261.2
+    # magnitude_threshold: 0.1
+    # hop_length: null
+    # shardshuffle: False
 
   shuffle_size: 24
   batch_size_train: 16
   batch_size_val: 1
   collate_fn:
-    _target_: main.data.dataset_musdb_chord.collate_fn_genre
+    _target_: main.data.dataset_musdb_melody.collate_fn_melody_mix
     _partial_: True
-    csv_path: "/app/data/tracklist.csv"
   drop_last: True
-  num_workers: 4
+  num_workers: 1
   pin_memory: True
   persistent_workers: True
   multiprocessing_context: spawn
@@ -69,11 +83,10 @@ callbacks:
     max_depth: 2
 
   audio_samples_logger:
-    _target_: main.module_controlnet_chord.SampleLogger
+    _target_: main.module_controlnet_melody.SampleLogger
     sampling_steps: [100]
     cfg_scale: 7.0
     num_samples: 2
-    frame_rate: ${chord_frame_rate}
 
 loggers:
   wandb:
@@ -93,7 +106,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 50
+  max_epochs: -1
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null

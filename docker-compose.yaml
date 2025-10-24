@@ -32,7 +32,7 @@ services:
     <<: *x-gpu
     tty: true
     stdin_open: true
-    shm_size: "2gb"
+    shm_size: "16gb"
 
   # gui:
   #   <<: *x-gui
