@@ -21,18 +21,18 @@ datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule
   train_dataset:
     _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
-    path: null
+    path: /app/data/musdb18hq/train.tar
     sample_rate: ${sample_rate}
-    lab_dir: null
+    lab_dir: /app/data/musdb_simple_train
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: True
 
   val_dataset:
     _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
-    path: null
+    path: /app/data/musdb18hq/test_ordered.tar
     sample_rate: ${sample_rate}
-    lab_dir: null
+    lab_dir: /app/data/musdb_simple_test
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: False
