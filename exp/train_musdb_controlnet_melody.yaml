@@ -37,8 +37,8 @@ datamodule:
 
   val_dataset:
     _target_: main.data.dataset_musdb_melody_cached.create_musdb_dataset_melody_from_cache
-    cache_file: /app/data/melody_cache/test_melody.h5
-    tar_path: /app/data/musdb18hq/test.tar
+    cache_file: /app/data/melody_cache/test_ordered_melody.h5
+    tar_path: /app/data/musdb18hq/test_ordered.tar
     sample_rate: ${sample_rate}
     chunk_dur: ${chunk_dur}
     # 元の実装（毎回メロディ計算）:
@@ -56,8 +56,13 @@ datamodule:
   batch_size_train: 16
   batch_size_val: 1
   collate_fn:
-    _target_: main.data.dataset_musdb_melody.collate_fn_melody_mix
+    # _target_: main.data.dataset_musdb_melody.collate_fn_melody_mix
+    # _partial_: True
+    _target_: main.data.dataset_musdb_melody_cached.collate_fn_genre_melody
     _partial_: True
+    csv_path: "/app/data/tracklist.csv"
+    # drop_vocals: True # 楽器のメロディーを生成する場合
+    drop_vocals: False  # ボーカルのメロディーを生成する場合（歌詞は連続しないので、要検討）
   drop_last: True
   num_workers: 1
   pin_memory: True

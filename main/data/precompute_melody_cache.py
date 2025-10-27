@@ -85,6 +85,7 @@ def _compute_topk_cqt_melody(
     hpf_cutoff_hz: float = 261.2,
     magnitude_threshold: float = 0.1,
     hop_length: int | None = None,
+    chunk_duration_s: float | None = 60.0,
 ) -> Tensor:
     """Compute top-k CQT-based melody indices for stereo waveform."""
     x = highpass_biquad(waveform, sample_rate, cutoff_freq=hpf_cutoff_hz)
@@ -96,115 +97,102 @@ def _compute_topk_cqt_melody(
     if hop_length is None:
         hop_length = max(1, int(sample_rate / 100))
 
+    if chunk_duration_s is None:
+        chunk_samples = x.shape[-1]
+    else:
+        chunk_samples = max(hop_length, int(chunk_duration_s * sample_rate))
+
     mel_list = []
     for ch in [0, 1]:
-        x_np = x[ch].detach().cpu().numpy().astype(np.float64)
-        C = librosa.cqt(
-            x_np,
-            sr=sample_rate,
-            fmin=fmin,
-            n_bins=n_bins,
-            bins_per_octave=bins_per_octave,
-            hop_length=hop_length,
-        )
-        mag = np.abs(C).astype(np.float32)
-        mag_t = torch.from_numpy(mag)
+        channel = x[ch]
+        channel_chunks = []
 
-        max_per_frame = torch.clamp(mag_t.max(dim=0).values, min=1e-8)
-        norm_mag = mag_t / max_per_frame.unsqueeze(0)
-
-        vals, idx = torch.topk(norm_mag, k=topk, dim=0, largest=True, sorted=True)
-
-        idx_int = idx.to(torch.int64)
-        rest_mask = vals < magnitude_threshold
-        out = idx_int.clone()
-        out[rest_mask] = -1
-        mel_list.append(out)
-
-        del x_np, C, mag, mag_t, max_per_frame, norm_mag, vals, idx, idx_int, rest_mask
-
-    L, R = mel_list
-    interleaved = torch.stack([L[0], R[0], L[1], R[1], L[2], R[2], L[3], R[3]], dim=0)
-    return interleaved
-
-
-def _get_slices_with_melody(
-    src,
-    chunk_dur: float,
-    n_bins: int = 128,
-    bins_per_octave: int = 12,
-    topk: int = 4,
-    hpf_cutoff_hz: float = 261.2,
-    magnitude_threshold: float = 0.1,
-    hop_length: int | None = None,
-):
-    for sample in src:
-        stems, sr, sample_key = sample
-
-        channels, length = list(stems.values())[0].shape
-        chunk_size = int(sr * chunk_dur)
-
-        if length < chunk_size:
-            padding = torch.zeros(channels, chunk_size - length)
-            stems = {
-                stem: torch.cat([track, padding], dim=-1)
-                for stem, track in stems.items()
-            }
-            length = chunk_size
-
-        max_shift = length - (length // chunk_size) * chunk_size
-        shift = torch.randint(0, max_shift + 1, (1,)).item()
-
-        for i in range(length // chunk_size):
-            start_idx = min(length - chunk_size, i * chunk_size + shift)
-            end_idx = start_idx + chunk_size
-            start_s = start_idx / sr
-
-            chunks = {
-                stem: track[:, start_idx:end_idx] for stem, track in stems.items()
-            }
-
-            chunks = {
-                k: v
-                for k, v in chunks.items()
-                if _weights_for_nonzero_refs(v.sum(dim=0))
-            }
-            if len(chunks) < 2 or (
-                len(chunks) == 2 and "vocals" in list(chunks.keys())
-            ):
+        for start in range(0, channel.shape[-1], chunk_samples):
+            end = min(start + chunk_samples, channel.shape[-1])
+            chunk = channel[start:end]
+            if chunk.numel() == 0:
                 continue
 
-            mix = _mix_stems(chunks)
-            melody_chunk = _compute_topk_cqt_melody(
-                mix,
-                sample_rate=sr,
-                n_bins=n_bins,
-                bins_per_octave=bins_per_octave,
-                topk=topk,
-                hpf_cutoff_hz=hpf_cutoff_hz,
-                magnitude_threshold=magnitude_threshold,
-                hop_length=hop_length,
+            x_np = chunk.detach().cpu().numpy().astype(np.float32, copy=False)
+            try:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                    dtype=np.complex64,
+                )
+            except TypeError:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                ).astype(np.complex64, copy=False)
+
+            mag = np.abs(C).astype(np.float32, copy=False)
+            if mag.size == 0:
+                continue
+
+            mag_t = torch.from_numpy(mag)
+            max_per_frame = torch.clamp(mag_t.max(dim=0).values, min=1e-8)
+            norm_mag = mag_t / max_per_frame.unsqueeze(0)
+            vals, idx = torch.topk(norm_mag, k=topk, dim=0, largest=True, sorted=True)
+            idx_int = idx.to(torch.int64)
+            rest_mask = vals < magnitude_threshold
+            out = idx_int.clone()
+            out[rest_mask] = -1
+            channel_chunks.append(out)
+
+            del (
+                chunk,
+                x_np,
+                C,
+                mag,
+                mag_t,
+                max_per_frame,
+                norm_mag,
+                vals,
+                idx,
+                idx_int,
+                rest_mask,
             )
 
-            yield chunks, melody_chunk, start_s, length / sr, sample_key
+        if channel_chunks:
+            mel_list.append(torch.cat(channel_chunks, dim=1))
+        else:
+            mel_list.append(torch.empty(topk, 0, dtype=torch.int64))
+
+    L, R = mel_list
+    interleaved_channels = []
+    for i in range(topk):
+        interleaved_channels.extend([L[i], R[i]])
+    interleaved = torch.stack(interleaved_channels, dim=0)
+    return interleaved
 
 
 def precompute_melody_cache(
     tar_path: str,
     cache_dir: str,
     sample_rate: int = 44100,
-    chunk_dur: float = 47.57,
     cqt_bins: int = 128,
     bins_per_octave: int = 12,
     topk: int = 4,
     hpf_cutoff_hz: float = 261.2,
     magnitude_threshold: float = 0.1,
+    chunk_duration_s: float | None = 60.0,
 ):
     """
-    WebDataset tar ファイルから全メロディデータを事前計算して HDF5 に保存
+    WebDataset tar ファイルから曲全体のメロディーを事前計算して HDF5 に保存
 
     HDF5 構造:
-      /{sample_key}/melody -> (8, T_fk) int64 テンソル
+      /{sample_key}/melody -> (8, T_full) int64 テンソル (曲全体)
+      /{sample_key}/@duration_s -> float (曲の長さ)
+      /{sample_key}/@sr -> int (サンプリングレート)
     """
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
@@ -217,16 +205,6 @@ def precompute_melody_cache(
 
     # Dataset の作成
     fill_missing_keys_and_pad = partial(_fn_extract_stems_and_pad)
-    get_slices = partial(
-        _get_slices_with_melody,
-        chunk_dur=chunk_dur,
-        n_bins=cqt_bins,
-        bins_per_octave=bins_per_octave,
-        topk=topk,
-        hpf_cutoff_hz=hpf_cutoff_hz,
-        magnitude_threshold=magnitude_threshold,
-        hop_length=None,
-    )
     fn_resample = partial(_fn_resample, sample_rate=sample_rate)
 
     dataset = (
@@ -234,43 +212,48 @@ def precompute_melody_cache(
         .decode(torch_audio)
         .map(fill_missing_keys_and_pad)
         .map(fn_resample)
-        .compose(get_slices)
     )
 
     # HDF5 ファイルに保存
     with h5py.File(cache_file, "w") as f:
         f.attrs["tar_path"] = str(tar_path)
         f.attrs["sample_rate"] = sample_rate
-        f.attrs["chunk_dur"] = chunk_dur
         f.attrs["cqt_bins"] = cqt_bins
         f.attrs["topk"] = topk
 
-        chunk_counters = {}  # sample_key ごとのチャンク番号を追跡
         total_count = 0
 
-        for chunks, melody_chunk, start_s, total_s, sample_key in tqdm.tqdm(
-            dataset, desc="Computing melodies"
-        ):
-            # sample_key ごとに独立したチャンク番号をカウント
-            if sample_key not in chunk_counters:
-                chunk_counters[sample_key] = 0
+        for stems, sr, sample_key in tqdm.tqdm(dataset, desc="Computing full melodies"):
+            # 曲全体をミックス
+            mix = _mix_stems(stems)
 
-            chunk_idx = chunk_counters[sample_key]
-            chunk_key = f"{sample_key}_chunk_{chunk_idx}"
-            chunk_counters[sample_key] += 1
+            # 曲全体のメロディーを計算
+            melody_full = _compute_topk_cqt_melody(
+                mix,
+                sample_rate=sr,
+                n_bins=cqt_bins,
+                bins_per_octave=bins_per_octave,
+                topk=topk,
+                hpf_cutoff_hz=hpf_cutoff_hz,
+                magnitude_threshold=magnitude_threshold,
+                hop_length=None,
+                chunk_duration_s=chunk_duration_s,
+            )
 
-            # NumPy にコンバート
-            melody_np = melody_chunk.numpy().astype(np.int64)
+            melody_np = melody_full.numpy().astype(np.int64)
+            duration_s = mix.shape[-1] / sr
 
-            grp = f.create_group(chunk_key)
-            grp.create_dataset("melody", data=melody_np)
-            grp.attrs["start_s"] = float(start_s)
-            grp.attrs["total_s"] = float(total_s)
-            grp.attrs["sample_key"] = sample_key
+            # sample_key でグループ作成
+            grp = f.create_group(sample_key)
+            grp.create_dataset(
+                "melody", data=melody_np, compression="gzip", compression_opts=4
+            )
+            grp.attrs["duration_s"] = float(duration_s)
+            grp.attrs["sr"] = int(sr)
 
             total_count += 1
 
-    print(f"✅ Saved {total_count} melody samples to {cache_file}")
+    print(f"✅ Saved {total_count} full melodies to {cache_file}")
     return cache_file
 
 
@@ -281,11 +264,11 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, required=True, help="Path to tar file")
     parser.add_argument("--cache-dir", type=str, default="/app/data/melody_cache")
     parser.add_argument("--sample-rate", type=int, default=44100)
-    parser.add_argument("--chunk-dur", type=float, default=47.57)
     parser.add_argument("--cqt-bins", type=int, default=128)
     parser.add_argument("--topk", type=int, default=4)
     parser.add_argument("--hpf-cutoff-hz", type=float, default=261.2)
     parser.add_argument("--magnitude-threshold", type=float, default=0.1)
+    parser.add_argument("--chunk-duration", type=float, default=60.0)
 
     args = parser.parse_args()
 
@@ -293,9 +276,9 @@ if __name__ == "__main__":
         tar_path=args.path,
         cache_dir=args.cache_dir,
         sample_rate=args.sample_rate,
-        chunk_dur=args.chunk_dur,
         cqt_bins=args.cqt_bins,
         topk=args.topk,
         hpf_cutoff_hz=args.hpf_cutoff_hz,
         magnitude_threshold=args.magnitude_threshold,
+        chunk_duration_s=args.chunk_duration,
     )

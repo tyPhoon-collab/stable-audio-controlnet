@@ -12,6 +12,7 @@ HDF5 キャッシュからメロディデータを読み込むデータセット
   )
 """
 
+import csv
 import random
 from functools import partial
 from pathlib import Path
@@ -127,11 +128,10 @@ class MelodyH5CachedDataset(IterableDataset):
     """
     HDF5 メロディキャッシュを使用するデータセット
 
-    HDF5 ファイル構造:
-      /{chunk_key}/melody -> (8, T_fk) int64
-      /{chunk_key}/@start_s -> float
-      /{chunk_key}/@total_s -> float
-      /{chunk_key}/@sample_key -> str
+    HDF5 ファイル構造（新形式）:
+      /{sample_key}/melody -> (8, T_full) int64 (曲全体のメロディー)
+      /{sample_key}/@duration_s -> float
+      /{sample_key}/@sr -> int
     """
 
     def __init__(
@@ -147,40 +147,38 @@ class MelodyH5CachedDataset(IterableDataset):
         self.chunk_dur = chunk_dur
         self.shuffle_size = 0
 
-        # HDF5 キャッシュをメモリに読み込み（小～中規模な場合）
+        # HDF5 キャッシュをメモリに読み込み
         self._melody_cache = {}
         self._load_melody_cache()
 
     def shuffle(self, shuffle_size: int = 0):
-        """WebDataset互換のshuffleメソッド（shuffle_size は無視）"""
+        """WebDataset互換のshuffleメソッド"""
         self.shuffle_size = shuffle_size
         return self
 
     def _load_melody_cache(self):
-        """HDF5 からメロディデータをメモリに読み込む"""
+        """HDF5 からメロディデータ（曲全体）をメモリに読み込む"""
         with h5py.File(self.cache_file, "r") as f:
-            for chunk_key in f.keys():
-                grp = f[chunk_key]
+            for sample_key in f.keys():
+                grp = f[sample_key]
                 melody_data = grp["melody"]  # type: ignore
                 if isinstance(melody_data, h5py.Dataset):
                     melody_np = melody_data[:]
                 else:
                     melody_np = melody_data
 
-                start_s_val = grp.attrs["start_s"]  # type: ignore
-                total_s_val = grp.attrs["total_s"]  # type: ignore
-                sample_key_val = grp.attrs["sample_key"]  # type: ignore
+                duration_s = float(grp.attrs["duration_s"])  # type: ignore
+                sr = int(grp.attrs["sr"])  # type: ignore
 
-                self._melody_cache[chunk_key] = {
-                    "melody": torch.from_numpy(melody_np).long(),
-                    "start_s": float(start_s_val),  # type: ignore
-                    "total_s": float(total_s_val),  # type: ignore
-                    "sample_key": str(sample_key_val),
+                self._melody_cache[sample_key] = {
+                    "melody": torch.from_numpy(melody_np).long(),  # (8, T_full)
+                    "duration_s": duration_s,
+                    "sr": sr,
                 }
-        print(f"✅ Loaded {len(self._melody_cache)} melody samples from cache")
+        print(f"✅ Loaded {len(self._melody_cache)} full melody tracks from cache")
 
     def __iter__(self):
-        """WebDataset tar から audio チャンクを読み込み、キャッシュからメロディを取得"""
+        """WebDataset tar から audio チャンクを読み込み、キャッシュからメロディをスライス"""
         fill_missing_keys_and_pad = partial(_fn_extract_stems_and_pad)
         get_slices = partial(_get_slices, chunk_dur=self.chunk_dur)
         fn_resample = partial(_fn_resample, sample_rate=self.sample_rate)
@@ -193,22 +191,33 @@ class MelodyH5CachedDataset(IterableDataset):
             .compose(get_slices)
         )
 
-        chunk_counters = {}  # sample_key ごとのチャンク番号を追跡
         for chunks, start_s, total_s, sample_key in dataset:
-            # sample_key ごとに独立したチャンク番号をカウント
-            if sample_key not in chunk_counters:
-                chunk_counters[sample_key] = 0
+            if sample_key in self._melody_cache:
+                cache_data = self._melody_cache[sample_key]
+                melody_full = cache_data["melody"]  # (8, T_full)
 
-            chunk_idx = chunk_counters[sample_key]
-            chunk_key = f"{sample_key}_chunk_{chunk_idx}"
-            chunk_counters[sample_key] += 1
+                # フレーム位置を計算
+                hop_length = max(1, int(self.sample_rate / 100))
+                chunk_size = int(self.sample_rate * self.chunk_dur)
+                start_frame = int(start_s * self.sample_rate / hop_length)
+                frames_per_chunk = int(chunk_size / hop_length)
 
-            if chunk_key in self._melody_cache:
-                cache_data = self._melody_cache[chunk_key]
-                melody_chunk = cache_data["melody"]
+                # メロディをスライス
+                end_frame = min(start_frame + frames_per_chunk, melody_full.shape[1])
+                melody_chunk = melody_full[:, start_frame:end_frame]
+
+                # フレーム数が足りない場合はパディング
+                if melody_chunk.shape[1] < frames_per_chunk:
+                    padding = torch.full(
+                        (8, frames_per_chunk - melody_chunk.shape[1]),
+                        -1,
+                        dtype=torch.long,
+                    )
+                    melody_chunk = torch.cat([melody_chunk, padding], dim=1)
+
                 yield chunks, melody_chunk, start_s, total_s, sample_key
             else:
-                print(f"⚠️  Melody cache miss for {chunk_key}, skipping")
+                print(f"⚠️  Melody cache miss for {sample_key}, skipping")
 
 
 def create_musdb_dataset_melody_from_cache(
@@ -335,6 +344,97 @@ def collate_fn_melody_mix(
     )
 
 
+class GenreMapping:
+    """ジャンルマッピングのシングルトンクラス"""
+
+    _instance = None
+    _mapping = None
+    _csv_path = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def load_mapping(self, csv_path: str):
+        """CSVファイルからジャンルマッピングを読み込む"""
+        if self._mapping is not None and self._csv_path == csv_path:
+            return self._mapping
+
+        mapping = {}
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                track_name = row["Track Name"]
+                genre = row["Genre"]
+                mapping[track_name] = genre
+
+        self._mapping = mapping
+        self._csv_path = csv_path
+        return mapping
+
+    def get_genre(self, track_name: str, default: str = "Unknown") -> str:
+        """トラック名からジャンルを取得"""
+        if self._mapping is None:
+            return default
+        return self._mapping.get(track_name, default)
+
+
+def collate_fn_genre_melody(
+    samples,
+    csv_path: str,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
+    """ジャンル情報を使ったメロディ付き collate 関数
+
+    Args:
+        samples: バッチサンプル
+        csv_path: ジャンル情報が含まれるCSVファイルのパス
+        drop_vocals: ボーカルトラックを除去するか
+        prompt_text: カスタムプロンプト（Noneの場合はジャンル情報を使用）
+    """
+    # ジャンルマッピングを読み込み
+    genre_mapper = GenreMapping()
+    genre_mapper.load_mapping(csv_path)
+
+    # メロディ付きの形式
+    start_seconds = [x for _, _, x, _, _ in samples]
+    total_seconds = [x for _, _, _, x, _ in samples]
+    melody_chunks = [x for _, x, _, _, _ in samples]
+    sample_keys = [x for _, _, _, _, x in samples]
+    samples_data = [x for x, _, _, _, _ in samples]
+
+    if drop_vocals:
+        for sample in samples_data:
+            if "vocals" in sample:
+                sample.pop("vocals")
+
+    outputs = []
+    prompts = []
+
+    for i, sample in enumerate(samples_data):
+        out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
+        outputs.append(out_track)
+
+        if prompt_text is None:
+            # sample_keyからジャンルを取得
+            sample_key = sample_keys[i]
+            genre = genre_mapper.get_genre(sample_key)
+            prompts.append(f"{genre}")
+        else:
+            prompts.append(prompt_text)
+
+    melody_batch = torch.stack(melody_chunks)
+    return (
+        torch.concat(outputs),
+        prompts,
+        start_seconds,
+        total_seconds,
+        melody_batch,
+    )
+
+
 if __name__ == "__main__":
     print("=== キャッシュ付きメロディデータセット テスト ===")
     # 注意: 先に precompute_melody_cache.py を実行してキャッシュを作成してください
@@ -356,5 +456,24 @@ if __name__ == "__main__":
     #     outputs, prompts, start_seconds, total_seconds, melody_batch = batch
     #     print(f"  Audio: {outputs.shape}, Melody: {melody_batch.shape}")
     #     if i >= 1:
+    #         break
+
+    print("\n=== ジャンル情報付きのテスト ===")
+    # csv_path = "/app/data/tracklist.csv"
+    # collate_fn_with_genre = partial(collate_fn_genre_melody, csv_path=csv_path)
+    # dataloader_with_genre = DataLoader(
+    #     dataset,
+    #     batch_size=2,
+    #     pin_memory=True,
+    #     collate_fn=collate_fn_with_genre,
+    #     num_workers=0,
+    # )
+    # for i, batch in enumerate(dataloader_with_genre):
+    #     print(f"Batch {i}: {len(batch)} elements")
+    #     outputs, prompts, start_seconds, total_seconds, melody_batch = batch
+    #     print(f"  Audio outputs: {outputs.shape}")
+    #     print(f"  Prompts: {prompts}")
+    #     print(f"  Melody batch: {melody_batch.shape}")
+    #     if i >= 2:
     #         break
     print("キャッシュ作成後、上記をコメントアウト解除して実行してください")
