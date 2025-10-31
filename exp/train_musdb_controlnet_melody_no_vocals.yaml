@@ -20,7 +20,7 @@ datamodule:
   _target_: main.module_controlnet_melody.WebDatasetDatamodule
   train_dataset:
     _target_: main.data.dataset_musdb_melody_cached.create_musdb_dataset_melody_from_cache
-    cache_file: /app/data/melody_cache/train_melody.h5
+    cache_file: /app/data/melody_cache/train_no_vocals_melody.h5
     tar_path: /app/data/musdb18hq/train.tar
     sample_rate: ${sample_rate}
     chunk_dur: ${chunk_dur}
@@ -37,7 +37,7 @@ datamodule:
 
   val_dataset:
     _target_: main.data.dataset_musdb_melody_cached.create_musdb_dataset_melody_from_cache
-    cache_file: /app/data/melody_cache/test_ordered_melody.h5
+    cache_file: /app/data/melody_cache/test_ordered_no_vocals_melody.h5
     tar_path: /app/data/musdb18hq/test_ordered.tar
     sample_rate: ${sample_rate}
     chunk_dur: ${chunk_dur}
@@ -61,8 +61,8 @@ datamodule:
     _target_: main.data.dataset_musdb_melody_cached.collate_fn_genre_melody
     _partial_: True
     csv_path: "/app/data/tracklist.csv"
-    # drop_vocals: True # 楽器のメロディーを生成する場合
-    drop_vocals: False  # ボーカルのメロディーを生成する場合（歌詞は連続しないので、要検討）
+    drop_vocals: True # 楽器のメロディーを生成する場合
+    # drop_vocals: False  # ボーカルのメロディーを生成する場合（歌詞は連続しないので、要検討）
   drop_last: True
   num_workers: 4
   pin_memory: True

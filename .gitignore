@@ -16,3 +16,4 @@ notebook/_*.ipynb
 out
 
 res/*.pdf
+commands.txt

@@ -74,66 +74,93 @@ def _compute_topk_cqt_melody(
     topk: int = 4,
     hpf_cutoff_hz: float = 261.2,
     magnitude_threshold: float = 0.1,
-    hop_length: int | None = None,
+    hop_length: int = 512,
+    chunk_duration_s: float | None = 60.0,
 ) -> Tensor:
-    """
-    Compute top-k CQT-based melody indices for stereo waveform.
-
-    Returns tensor of shape (8, T_frames) with values in [0..127] per index and -1 for rest.
-    Interleaving order: [L_k1, R_k1, L_k2, R_k2, L_k3, R_k3, L_k4, R_k4].
-    """
-    # High-pass biquad filter
+    """Compute top-k CQT-based melody indices for stereo waveform."""
     x = highpass_biquad(waveform, sample_rate, cutoff_freq=hpf_cutoff_hz)
 
-    # Ensure stereo
     if x.size(0) == 1:
         x = x.repeat(2, 1)
 
-    # Librosa expects numpy float64; compute per channel CQT magnitude
-    fmin = librosa.midi_to_hz(0)  # MIDI 0
-    if hop_length is None:
-        # Choose hop to get a reasonable frame rate (~100 fps)
-        hop_length = max(1, int(sample_rate / 100))
+    fmin = librosa.midi_to_hz(0)
 
-    mel_list: List[Tensor] = []  # will collect [L_k1, R_k1, ..., L_k4, R_k4]
+    if chunk_duration_s is None:
+        chunk_samples = x.shape[-1]
+    else:
+        chunk_samples = max(hop_length, int(chunk_duration_s * sample_rate))
+
+    mel_list: List[Tensor] = []
     for ch in [0, 1]:
-        x_np = x[ch].detach().cpu().numpy().astype(np.float64)
-        C = librosa.cqt(
-            x_np,
-            sr=sample_rate,
-            fmin=fmin,
-            n_bins=n_bins,
-            bins_per_octave=bins_per_octave,
-            hop_length=hop_length,
-        )
-        mag = np.abs(C).astype(np.float32)  # (n_bins, T)
-        mag_t = torch.from_numpy(mag)  # (n_bins, T)
+        channel = x[ch]
+        channel_chunks = []
 
-        # Normalize per frame to compute thresholding
-        max_per_frame = torch.clamp(mag_t.max(dim=0).values, min=1e-8)  # (T)
-        norm_mag = mag_t / max_per_frame.unsqueeze(0)
+        for start in range(0, channel.shape[-1], chunk_samples):
+            end = min(start + chunk_samples, channel.shape[-1])
+            chunk = channel[start:end]
+            if chunk.numel() == 0:
+                continue
 
-        # Top-k indices and their normalized magnitudes
-        vals, idx = torch.topk(
-            norm_mag, k=topk, dim=0, largest=True, sorted=True
-        )  # (k, T)
+            x_np = chunk.detach().cpu().numpy().astype(np.float32, copy=False)
+            try:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                    dtype=np.complex64,
+                )
+            except TypeError:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                ).astype(np.complex64, copy=False)
 
-        # Map to 0..127 indices; apply threshold -> -1 rest
-        idx_int = idx.to(torch.int64)  # already 0..127
-        # Create rest mask for values below threshold
-        rest_mask = vals < magnitude_threshold
-        # Prepare output array (k, T) with -1 where below threshold
-        out = idx_int.clone()
-        out[rest_mask] = -1
-        mel_list.append(out)
+            mag = np.abs(C).astype(np.float32, copy=False)
+            if mag.size == 0:
+                continue
 
-        # 中間テンソルの明示的削除でメモリを解放
-        del x_np, C, mag, mag_t, max_per_frame, norm_mag, vals, idx, idx_int, rest_mask
+            mag_t = torch.from_numpy(mag)
+            max_per_frame = torch.clamp(mag_t.max(dim=0).values, min=1e-8)
+            norm_mag = mag_t / max_per_frame.unsqueeze(0)
+            vals, idx = torch.topk(norm_mag, k=topk, dim=0, largest=True, sorted=True)
+            idx_int = idx.to(torch.int64)
+            rest_mask = vals < magnitude_threshold
+            out = idx_int.clone()
+            out[rest_mask] = -1
+            channel_chunks.append(out)
 
-    # Interleave L/R: [L0, R0, L1, R1, L2, R2, L3, R3]
-    L, R = mel_list  # each (k, T)
-    interleaved = torch.stack([L[0], R[0], L[1], R[1], L[2], R[2], L[3], R[3]], dim=0)
-    return interleaved  # (8, T)
+            del (
+                chunk,
+                x_np,
+                C,
+                mag,
+                mag_t,
+                max_per_frame,
+                norm_mag,
+                vals,
+                idx,
+                idx_int,
+                rest_mask,
+            )
+
+        if channel_chunks:
+            mel_list.append(torch.cat(channel_chunks, dim=1))
+        else:
+            mel_list.append(torch.empty(topk, 0, dtype=torch.int64))
+
+    L, R = mel_list
+    interleaved_channels = []
+    for i in range(topk):
+        interleaved_channels.extend([L[i], R[i]])
+    interleaved = torch.stack(interleaved_channels, dim=0)
+    return interleaved
 
 
 def _get_slices_with_melody(
@@ -144,7 +171,8 @@ def _get_slices_with_melody(
     topk: int = 4,
     hpf_cutoff_hz: float = 261.2,
     magnitude_threshold: float = 0.1,
-    hop_length: int | None = None,
+    hop_length: int = 512,
+    chunk_duration_s: float | None = 60.0,
 ):
     for sample in src:
         stems, sr, sample_key = sample
@@ -195,6 +223,7 @@ def _get_slices_with_melody(
                 hpf_cutoff_hz=hpf_cutoff_hz,
                 magnitude_threshold=magnitude_threshold,
                 hop_length=hop_length,
+                chunk_duration_s=chunk_duration_s,
             )  # (8, T_fk)
 
             yield chunks, melody_chunk, start_s, length / sr, sample_key
@@ -210,7 +239,8 @@ def create_musdb_dataset_with_melody(
     topk: int = 4,
     hpf_cutoff_hz: float = 261.2,
     magnitude_threshold: float = 0.1,
-    hop_length: int | None = None,
+    hop_length: int = 512,
+    cqt_chunk_duration_s: float | None = 60.0,
 ):
     """
     メロディプロンプト(Top-k CQT, 8xT)付き MUSDB データセットを作成
@@ -228,6 +258,7 @@ def create_musdb_dataset_with_melody(
         hpf_cutoff_hz=hpf_cutoff_hz,
         magnitude_threshold=magnitude_threshold,
         hop_length=hop_length,
+        chunk_duration_s=cqt_chunk_duration_s,
     )
     fn_resample = partial(_fn_resample, sample_rate=sample_rate)
 

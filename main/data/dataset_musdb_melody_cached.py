@@ -16,7 +16,6 @@ import csv
 import random
 from functools import partial
 from pathlib import Path
-from typing import Dict
 
 import h5py
 import torch
@@ -67,17 +66,6 @@ def _fn_extract_stems_and_pad(sample):
     }
 
     return stems, default_sr, sample_key
-
-
-def _mix_stems(stems: Dict[str, Tensor]) -> Tensor:
-    """Sum all stems to create a stereo mixture. Ensures 2 channels."""
-    tracks = list(stems.values())
-    mix = torch.stack(tracks).sum(dim=0)
-    if mix.dim() == 1:
-        mix = mix.unsqueeze(0)
-    if mix.size(0) == 1:
-        mix = mix.repeat(2, 1)
-    return mix
 
 
 def _get_slices(
@@ -146,6 +134,7 @@ class MelodyH5CachedDataset(IterableDataset):
         self.sample_rate = sample_rate
         self.chunk_dur = chunk_dur
         self.shuffle_size = 0
+        self.hop_length = -1  # Set in _load_melody_cache
 
         # HDF5 キャッシュをメモリに読み込み
         self._melody_cache = {}
@@ -159,6 +148,7 @@ class MelodyH5CachedDataset(IterableDataset):
     def _load_melody_cache(self):
         """HDF5 からメロディデータ（曲全体）をメモリに読み込む"""
         with h5py.File(self.cache_file, "r") as f:
+            self.hop_length = int(f.attrs.get("hop_length", 512))
             for sample_key in f.keys():
                 grp = f[sample_key]
                 melody_data = grp["melody"]  # type: ignore
@@ -197,7 +187,7 @@ class MelodyH5CachedDataset(IterableDataset):
                 melody_full = cache_data["melody"]  # (8, T_full)
 
                 # フレーム位置を計算
-                hop_length = max(1, int(self.sample_rate / 100))
+                hop_length = self.hop_length
                 chunk_size = int(self.sample_rate * self.chunk_dur)
                 start_frame = int(start_s * self.sample_rate / hop_length)
                 frames_per_chunk = int(chunk_size / hop_length)
