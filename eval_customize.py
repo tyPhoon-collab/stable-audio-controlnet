@@ -29,6 +29,8 @@ Stable Audio ControlNet カスタム評価スクリプト
 
 import argparse
 import logging
+import os
+import random
 import re
 import sys
 from datetime import datetime
@@ -36,11 +38,33 @@ from pathlib import Path
 from typing import List, Optional
 
 import hydra
+import numpy as np
 import torch
 import torchaudio
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
 from main.data.annotation import ChordAnnotation
+
+
+def set_global_seed(seed: int, logger: Optional[logging.Logger] = None) -> None:
+    """再現性確保のために乱数関連のシードを統一設定"""
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    try:
+        torch.use_deterministic_algorithms(True)
+    except (RuntimeError, AttributeError) as err:
+        if logger:
+            logger.warning("Deterministic algorithms not fully enforced: %s", err)
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -266,7 +290,7 @@ def generate_audio(
         batch_size=1,
         steps=args.steps,
         cfg_scale=args.cfg_scale,
-        conditioning=conditioning,
+        conditioning=conditioning,  # type: ignore[arg-type]
         sample_size=sample_size,
         sigma_min=args.sigma_min,
         sigma_max=args.sigma_max,
@@ -423,6 +447,9 @@ def main():
     logger.info(f"生成時間: {args.duration}秒")
 
     try:
+        # 乱数シードを統一
+        set_global_seed(args.seed, logger)
+
         # 入力の検証
         if not validate_inputs(args, logger):
             sys.exit(1)
