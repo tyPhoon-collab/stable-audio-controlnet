@@ -1,0 +1,1073 @@
+"""
+2つの和音シーケンスを上下に並べて比較表示するスクリプト
+
+このスクリプトは2つの.labファイルを読み込み、
+上下に並べてコード進行を比較できるように可視化します。
+
+実行例:
+python compare_chord_sequences.py file1.lab file2.lab --output-dir results
+
+python compare_chord_sequences.py file1.lab file2.lab --output-dir results --stats
+
+python compare_chord_sequences.py file1.lab file2.lab --highlight-diff
+"""
+
+import argparse
+import colorsys
+import logging
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+# ログ設定
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# === コード進行分析のための定数 ===
+
+# クロマティックスケール
+CHROMATIC_SCALE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# 和音品質のHueマッピング（0-360度）
+QUALITY_HUE_MAP = {
+    "maj": 120,
+    "min": 210,
+    "7": 30,
+    "maj7": 280,
+    "min7": 180,
+    "dim": 0,
+    "aug": 15,
+    "sus4": 25,
+    "sus2": 200,
+    "N": 0,
+}
+
+# 和音品質の飽和度と明度
+QUALITY_SATURATION_LIGHTNESS = {
+    "maj": (0.4, 0.7),
+    "min": (0.45, 0.65),
+    "7": (0.5, 0.68),
+    "maj7": (0.5, 0.68),
+    "min7": (0.5, 0.68),
+    "dim": (0.55, 0.6),
+    "aug": (0.55, 0.6),
+    "sus4": (0.35, 0.72),
+    "sus2": (0.35, 0.72),
+    "N": (0.0, 0.5),
+}
+
+# レガシー互換性用（Nの色定義のみ）
+CHORD_COLOR_N = "#9E9E9E"
+
+# ビジュアル定数
+PLOT_COLORS = {
+    "match_bg": "#E8F5E9",
+    "match_edge": "#4CAF50",
+    "mismatch_bg": "#FFEBEE",
+    "mismatch_edge": "#F44336",
+    "match_text": "#1B5E20",
+    "mismatch_text": "#C62828",
+    "default_text": "#424242",
+    "no_match_bg": "white",
+    "no_match_edge": "#999",
+    "stats_bg": "#E8F5E9",
+    "stats_edge": "#4CAF50",
+}
+
+PLOT_FONTSIZE = {
+    "chord_min": 12,
+    "chord_max": 20,
+    "label": 14,
+    "ylabel": 13,
+    "time": 11,
+    "time_final": 8,
+    "stats_header": 12,
+    "stats_detail": 11,
+    "legend": 9,
+}
+
+PLOT_DIMENSIONS = {
+    "block_height": 0.6,
+    "block_pad": 0.02,
+    "bg_pad": 0.01,
+    "bg_offset": 0.05,
+    "time_offset": 0.1,
+    "time_depth": 0.08,
+    "mark_offset": 0.1,
+    "mark_fontsize": 16,
+    "legend_width": 0.04,
+    "legend_height": 0.06,
+}
+
+GRID_CONFIG = {
+    "with_stats": {"rows": 3, "height_ratios": [0.6, 1.5, 1.5], "hspace": 0.25},
+    "without_stats": {"rows": 2, "height_ratios": [1.5, 1.5], "hspace": 0.25},
+}
+
+DPI_DEFAULT = 300
+
+
+class ChordSequenceAnalyzer:
+    """コード進行分析クラス"""
+
+    def __init__(self):
+        self.data = None
+        self.total_duration = 0
+
+    def load_lab_file(self, file_path: str) -> pd.DataFrame:
+        """
+        .labファイルを読み込んでDataFrameに変換
+
+        Args:
+            file_path: .labファイルのパス
+
+        Returns:
+            pd.DataFrame: コード進行データ
+        """
+        try:
+            # TSV形式で読み込み
+            data = pd.read_csv(
+                file_path,
+                sep="\t",
+                header=None,
+                names=["start_time", "end_time", "chord"],
+            )
+
+            # データ型の変換
+            data["start_time"] = pd.to_numeric(data["start_time"])
+            data["end_time"] = pd.to_numeric(data["end_time"])
+            data["duration"] = data["end_time"] - data["start_time"]
+
+            # コード解析
+            data["root"], data["quality"] = zip(
+                *data["chord"].apply(self.parse_chord_symbol)
+            )
+
+            # 数値インデックスの追加
+            data["root_num"] = data["root"].apply(self.root_to_number)
+
+            self.data = data
+            self.total_duration = data["end_time"].max()
+
+            logger.info(
+                f"Loaded {len(data)} chord segments, total duration: {self.total_duration:.2f}s"
+            )
+            return data
+
+        except Exception as e:
+            logger.error(f"Error loading .lab file: {e}")
+            raise
+
+    def parse_chord_symbol(self, chord_symbol: str) -> Tuple[str, str]:
+        """
+        コード記号をルートと質に分解
+
+        Args:
+            chord_symbol: 'C:maj', 'A:min7' などのコード記号
+
+        Returns:
+            (root, quality): ルート音と和音の質
+        """
+        if chord_symbol == "N" or pd.isna(chord_symbol):
+            return "N", "N"
+
+        if ":" in chord_symbol:
+            root, quality = chord_symbol.split(":", 1)
+        else:
+            root = chord_symbol
+            quality = "maj"
+
+        return root.strip(), quality.strip()
+
+    def root_to_number(self, root: str) -> int:
+        """ルート音を数値に変換（C=0, C#=1, ..., B=11）"""
+        if root == "N":
+            return -1
+
+        root_normalized = (
+            root.replace("Db", "C#")
+            .replace("Eb", "D#")
+            .replace("Gb", "F#")
+            .replace("Ab", "G#")
+            .replace("Bb", "A#")
+        )
+
+        try:
+            return CHROMATIC_SCALE.index(root_normalized)
+        except ValueError:
+            logger.warning(f"Unknown root: {root}, treating as C")
+            return 0
+
+    def get_statistics(self) -> Dict:
+        """コード進行の統計情報を取得"""
+        if self.data is None:
+            return {}
+
+        stats = {
+            "total_chords": len(self.data),
+            "total_duration": self.total_duration,
+            "unique_chords": self.data["chord"].nunique(),
+            "unique_roots": self.data[self.data["root"] != "N"]["root"].nunique(),
+            "most_common_chord": self.data["chord"].mode().iloc[0]
+            if not self.data["chord"].mode().empty
+            else "N",
+            "most_common_root": self.data[self.data["root"] != "N"]["root"]
+            .mode()
+            .iloc[0]
+            if not self.data[self.data["root"] != "N"]["root"].mode().empty
+            else "N",
+            "avg_chord_duration": self.data["duration"].mean(),
+        }
+
+        quality_dist = self.data["quality"].value_counts()
+        stats["quality_distribution"] = quality_dist.to_dict()
+
+        root_dist = self.data[self.data["root"] != "N"]["root"].value_counts()
+        stats["root_distribution"] = root_dist.to_dict()
+
+        return stats
+
+
+class ChordSequenceComparison:
+    """コード進行比較可視化クラス"""
+
+    def __init__(
+        self,
+        analyzer1: ChordSequenceAnalyzer,
+        analyzer2: ChordSequenceAnalyzer,
+        label1: str = "Sequence 1",
+        label2: str = "Sequence 2",
+    ):
+        self.analyzer1 = analyzer1
+        self.analyzer2 = analyzer2
+        self.label1 = label1
+        self.label2 = label2
+        self.data1 = analyzer1.data
+        self.data2 = analyzer2.data
+
+    def get_chord_color(self, root: str, quality: str) -> str:
+        """
+        根音と品質を考慮した色を生成
+
+        Args:
+            root: ルート音（"C"など）
+            quality: 和音品質（"maj"など）
+
+        Returns:
+            16進数カラーコード
+        """
+        if root == "N" or quality == "N":
+            return CHORD_COLOR_N
+
+        base_hue = QUALITY_HUE_MAP.get(quality, 120)
+
+        # ルート音から色相オフセットを計算
+        if root in CHROMATIC_SCALE:
+            root_index = CHROMATIC_SCALE.index(root)
+            hue_offset = (root_index * 30) % 360
+            final_hue = (base_hue + hue_offset) % 360
+        else:
+            final_hue = base_hue
+
+        # 品質に応じた飽和度と明度を取得
+        saturation, lightness = QUALITY_SATURATION_LIGHTNESS.get(quality, (0.4, 0.7))
+
+        # HLSからRGBに変換
+        r, g, b = colorsys.hls_to_rgb(final_hue / 360, lightness, saturation)
+        return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+    def plot_comparison(
+        self,
+        figsize=(20, 12),
+        save_path: Optional[str] = None,
+        highlight_diff: bool = False,
+        show_stats: bool = True,
+    ):
+        """
+        2つのコード進行を上下に並べて表示
+
+        Args:
+            figsize: 図のサイズ
+            save_path: 保存先パス
+            highlight_diff: 差異をハイライトするか
+            show_stats: 統計情報を表示するか
+        """
+        if self.data1 is None or self.data2 is None:
+            logger.error("Data not available for plotting")
+            return
+
+        if highlight_diff:
+            # 差異ハイライト表示
+            fig = self._plot_comparison_with_diff(figsize, save_path, show_stats)
+        else:
+            # 通常の表示
+            fig, (ax1, ax2) = plt.subplots(
+                2, 1, figsize=figsize, gridspec_kw={"height_ratios": [1, 1]}
+            )
+
+            # 共通の時間軸に合わせるため、最大値を計算
+            max_duration = max(
+                self.analyzer1.total_duration, self.analyzer2.total_duration
+            )
+
+            # 上：シーケンス1
+            self._plot_sequence(
+                ax1, self.data1, self.label1, max_duration, is_first=True
+            )
+
+            # 下：シーケンス2
+            self._plot_sequence(
+                ax2, self.data2, self.label2, max_duration, is_first=False
+            )
+
+            plt.tight_layout()
+
+            if save_path:
+                plt.savefig(save_path, dpi=300, bbox_inches="tight")
+                logger.info(f"Comparison plot saved to {save_path}")
+
+        return fig
+
+    def _plot_sequence(
+        self,
+        ax,
+        data: pd.DataFrame,
+        label: str,
+        max_duration: float,
+        is_first: bool = True,
+    ):
+        """
+        単一のコード進行をプロット
+
+        Args:
+            ax: matplotlib軸
+            data: コード進行データ
+            label: シーケンスのラベル
+            max_duration: 共通の最大継続時間
+            is_first: 最初のシーケンスかどうか
+        """
+        y_pos = 0.5
+        block_height = 0.6
+
+        for idx, row in data.iterrows():
+            start = row["start_time"]
+            duration = row["duration"]
+            chord = row["chord"]
+            quality = row["quality"]
+            root = row["root"]
+
+            # 色を決定
+            base_color = self.get_chord_color(root, quality)
+
+            # ブロック（角丸）を描画
+            rect = patches.FancyBboxPatch(
+                (start, y_pos - block_height / 2),
+                duration,
+                block_height,
+                boxstyle="round,pad=0.02",
+                facecolor=base_color,
+                edgecolor="white",
+                linewidth=2,
+                alpha=0.9,
+            )
+            ax.add_patch(rect)
+
+            # コード名を表示
+            text_size = max(12, min(20, duration * 25 / max_duration))
+            ax.text(
+                start + duration / 2,
+                y_pos,
+                chord,
+                ha="center",
+                va="center",
+                fontsize=text_size,
+                fontweight="bold",
+                color="white",
+            )
+
+            # 時間表示
+            ax.text(
+                start + duration / 2,
+                y_pos - block_height / 2 - 0.1,
+                f"{start:.1f}s",
+                ha="center",
+                va="top",
+                fontsize=11,
+                color="gray",
+            )
+
+        # 最後の時間表示
+        final_time = data.iloc[-1]["start_time"] + data.iloc[-1]["duration"]
+        ax.text(
+            final_time,
+            y_pos - block_height / 2 - 0.1,
+            f"{final_time:.1f}s",
+            ha="center",
+            va="top",
+            fontsize=8,
+            color="gray",
+        )
+
+        ax.set_xlim(-0.5, max_duration + 0.5)
+        ax.set_ylim(0, 1)
+        ax.set_xlabel(
+            "Time (seconds)", fontsize=PLOT_FONTSIZE["label"], fontweight="bold"
+        )
+
+        # ラベルを設定（第1・第2シーケンスの役割を明示）
+        if is_first:
+            ax.set_ylabel(
+                "Ground Truth\n(Control Signal)",
+                fontsize=PLOT_FONTSIZE["ylabel"],
+                fontweight="bold",
+                color=PLOT_COLORS["match_text"],
+            )
+        else:
+            ax.set_ylabel(
+                "Estimated Chords\n(Generated Audio)",
+                fontsize=PLOT_FONTSIZE["ylabel"],
+                fontweight="bold",
+                color=PLOT_COLORS["mismatch_text"],
+            )
+
+        ax.set_yticks([])
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.grid(True, axis="x", alpha=0.3, linestyle="--")
+
+    def _calculate_chord_match(
+        self, row1: pd.Series, row2: pd.Series
+    ) -> Tuple[bool, bool, bool]:
+        """
+        2つのコードの一致度を判定
+
+        Args:
+            row1: シーケンス1のコードデータ
+            row2: シーケンス2のコードデータ
+
+        Returns:
+            (full_match, root_match, quality_match): 完全一致、根音一致、品質一致
+        """
+        full_match = row1["chord"] == row2["chord"]
+        root_match = row1["root"] == row2["root"]
+        quality_match = row1["quality"] == row2["quality"]
+
+        return full_match, root_match, quality_match
+
+    def _find_matching_chord(
+        self, row: pd.Series, data_ref: pd.DataFrame
+    ) -> Optional[pd.Series]:
+        """
+        指定されたコードに対応する参照データのコードを探す
+        時間範囲の重なりが最も大きいコードを対応させる
+
+        Args:
+            row: メインのコードデータ
+            data_ref: 参照データ
+
+        Returns:
+            対応するコード、見つからない場合はNone
+        """
+        max_overlap = 0
+        best_match = None
+
+        # 参照データの各コードとの時間的な重なりを計算
+        for _, ref_row in data_ref.iterrows():
+            # 重なり区間の開始と終了
+            overlap_start = max(row["start_time"], ref_row["start_time"])
+            overlap_end = min(row["end_time"], ref_row["end_time"])
+
+            # 重なりがある場合
+            if overlap_start < overlap_end:
+                overlap = overlap_end - overlap_start
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_match = ref_row
+
+        return best_match
+
+    def _plot_comparison_with_diff(
+        self, figsize=(20, 14), save_path: Optional[str] = None, show_stats: bool = True
+    ):
+        """
+        差異をハイライトして表示
+
+        Args:
+            figsize: 図のサイズ
+            save_path: 保存先パス
+            show_stats: 統計情報を表示するか
+        """
+        max_duration = max(self.analyzer1.total_duration, self.analyzer2.total_duration)
+
+        fig = plt.figure(figsize=figsize)
+
+        # グリッドスペックの設定
+        grid_config = (
+            GRID_CONFIG["with_stats"] if show_stats else GRID_CONFIG["without_stats"]
+        )
+        gs = fig.add_gridspec(
+            grid_config["rows"],
+            1,
+            height_ratios=grid_config["height_ratios"],
+            hspace=grid_config["hspace"],
+        )
+
+        ax_title = fig.add_subplot(gs[0]) if show_stats else None
+        ax1 = fig.add_subplot(gs[1] if show_stats else gs[0])
+        ax2 = fig.add_subplot(gs[2] if show_stats else gs[1])
+
+        # シーケンス1のマッチ情報を計算
+        matches, root_matches, quality_matches = self._calculate_matches(
+            self.data1, self.data2
+        )
+
+        # シーケンス1を描画
+        self._plot_sequence_with_diff(
+            ax1,
+            self.data1,
+            self.data2,
+            self.label1,
+            max_duration,
+            matches,
+            is_first=True,
+        )
+
+        # シーケンス2のマッチ情報を計算
+        matches2, root_matches2, quality_matches2 = self._calculate_matches(
+            self.data2, self.data1
+        )
+
+        # シーケンス2を描画
+        self._plot_sequence_with_diff(
+            ax2,
+            self.data2,
+            self.data1,
+            self.label2,
+            max_duration,
+            matches2,
+            is_first=False,
+        )
+
+        # 統計情報を表示（オプショナル）
+        if show_stats and ax_title is not None:
+            self._plot_statistics_header(
+                ax_title, matches, root_matches, quality_matches
+            )
+
+        if save_path:
+            plt.savefig(save_path, dpi=DPI_DEFAULT, bbox_inches="tight")
+            logger.info(f"Comparison plot with diff saved to {save_path}")
+
+        plt.close()
+        return fig
+
+    def _calculate_matches(
+        self, data_main: pd.DataFrame, data_ref: pd.DataFrame
+    ) -> Tuple[List[bool], List[bool], List[bool]]:
+        """
+        2つのデータセット間のマッチ情報を計算
+
+        Args:
+            data_main: メインのコード進行
+            data_ref: 参照のコード進行
+
+        Returns:
+            (matches, root_matches, quality_matches): マッチ情報のタプル
+        """
+        matches = []
+        root_matches = []
+        quality_matches = []
+
+        for _, row_main in data_main.iterrows():
+            matching_row = self._find_matching_chord(row_main, data_ref)
+            if matching_row is not None:
+                full_match, root_match, quality_match = self._calculate_chord_match(
+                    row_main, matching_row
+                )
+                matches.append(full_match)
+                root_matches.append(root_match)
+                quality_matches.append(quality_match)
+            else:
+                matches.append(False)
+                root_matches.append(False)
+                quality_matches.append(False)
+
+        return matches, root_matches, quality_matches
+
+    def _plot_sequence_with_diff(
+        self,
+        ax,
+        data_main: pd.DataFrame,
+        data_ref: pd.DataFrame,
+        label: str,
+        max_duration: float,
+        matches: List[bool],
+        is_first: bool = True,
+    ):
+        """
+        差異をハイライト付きでシーケンスを描画
+
+        Args:
+            ax: matplotlib軸
+            data_main: メインのデータ
+            data_ref: 参照データ
+            label: ラベル
+            max_duration: 最大継続時間
+            matches: 一致フラグのリスト
+            is_first: 最初のシーケンスかどうか
+        """
+        y_pos = 0.5
+        block_height = 0.6
+
+        match_idx = 0
+
+        for idx, row in data_main.iterrows():
+            start = row["start_time"]
+            duration = row["duration"]
+            chord = row["chord"]
+            quality = row["quality"]
+            root = row["root"]
+
+            # 色を決定
+            base_color = self.get_chord_color(root, quality)
+
+            # 対応するコードが一致しているかを確認
+            is_match = match_idx < len(matches) and matches[match_idx]
+            match_idx += 1
+
+            # 背景色を設定（差異をハイライト）
+            if is_match:
+                # 一致：淡い緑色の背景
+                background_color = PLOT_COLORS["match_bg"]
+                edge_color = PLOT_COLORS["match_edge"]
+                edge_width = 2
+            else:
+                # 不一致：淡い赤色の背景
+                background_color = PLOT_COLORS["mismatch_bg"]
+                edge_color = PLOT_COLORS["mismatch_edge"]
+                edge_width = 3
+
+            # 背景ブロック
+            bg_rect = patches.FancyBboxPatch(
+                (start, y_pos - block_height / 2 - PLOT_DIMENSIONS["bg_offset"]),
+                duration,
+                block_height + PLOT_DIMENSIONS["bg_offset"] * 2,
+                boxstyle=f"round,pad={PLOT_DIMENSIONS['bg_pad']}",
+                facecolor=background_color,
+                edgecolor=edge_color,
+                linewidth=edge_width,
+                alpha=0.5,
+            )
+            ax.add_patch(bg_rect)
+
+            # メインのコードブロック
+            rect = patches.FancyBboxPatch(
+                (start, y_pos - block_height / 2),
+                duration,
+                block_height,
+                boxstyle=f"round,pad={PLOT_DIMENSIONS['block_pad']}",
+                facecolor=base_color,
+                edgecolor="white",
+                linewidth=2,
+                alpha=0.9,
+            )
+            ax.add_patch(rect)
+
+            # コード名を表示
+            text_size = max(
+                PLOT_FONTSIZE["chord_min"],
+                min(PLOT_FONTSIZE["chord_max"], duration * 25 / max_duration),
+            )
+            ax.text(
+                start + duration / 2,
+                y_pos,
+                chord,
+                ha="center",
+                va="center",
+                fontsize=text_size,
+                fontweight="bold",
+                color="white",
+            )
+
+            # 一致/不一致マーク
+            mark_symbol = "✓" if is_match else "✗"
+            mark_color = (
+                PLOT_COLORS["match_edge"] if is_match else PLOT_COLORS["mismatch_edge"]
+            )
+            ax.text(
+                start + duration - PLOT_DIMENSIONS["mark_offset"],
+                y_pos + block_height / 2 + PLOT_DIMENSIONS["time_depth"],
+                mark_symbol,
+                ha="center",
+                va="center",
+                fontsize=PLOT_DIMENSIONS["mark_fontsize"],
+                fontweight="bold",
+                color=mark_color,
+            )
+
+            # 時間表示
+            ax.text(
+                start + duration / 2,
+                y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
+                f"{start:.1f}s",
+                ha="center",
+                va="top",
+                fontsize=PLOT_FONTSIZE["time"],
+                color="gray",
+            )
+
+        # 最後の時間表示
+        final_time = data_main.iloc[-1]["start_time"] + data_main.iloc[-1]["duration"]
+        ax.text(
+            final_time,
+            y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
+            f"{final_time:.1f}s",
+            ha="center",
+            va="top",
+            fontsize=PLOT_FONTSIZE["time_final"],
+            color="gray",
+        )
+
+        ax.set_xlim(-0.5, max_duration + 0.5)
+        ax.set_ylim(-0.2, 1.2)
+        ax.set_xlabel(
+            "Time (seconds)", fontsize=PLOT_FONTSIZE["label"], fontweight="bold"
+        )
+        ax.set_ylabel(label, fontsize=PLOT_FONTSIZE["label"], fontweight="bold")
+        ax.set_yticks([])
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.grid(True, axis="x", alpha=0.3, linestyle="--")
+
+    def _plot_statistics_header(
+        self,
+        ax,
+        matches: List[bool],
+        root_matches: List[bool],
+        quality_matches: List[bool],
+    ):
+        """
+        統計情報とタイトルをヘッダーとして表示（上部配置用）
+
+        Args:
+            ax: matplotlib軸
+            matches: 完全一致フラグのリスト
+            root_matches: 根音一致フラグのリスト
+            quality_matches: 品質一致フラグのリスト
+        """
+        if not matches:
+            ax.text(0.5, 0.5, "No matching data", ha="center", va="center", fontsize=14)
+            ax.axis("off")
+            return
+
+        total = len(matches)
+        exact_matches = sum(matches)
+        root_match_count = sum(root_matches)
+        quality_match_count = sum(quality_matches)
+        mismatch_count = total - exact_matches
+
+        exact_rate = (exact_matches / total * 100) if total > 0 else 0
+        root_rate = (root_match_count / total * 100) if total > 0 else 0
+        quality_rate = (quality_match_count / total * 100) if total > 0 else 0
+
+        # 背景ボックス
+        ax.add_patch(
+            patches.Rectangle(
+                (0, 0),
+                1,
+                1,
+                facecolor=PLOT_COLORS["stats_bg"],
+                edgecolor=PLOT_COLORS["stats_edge"],
+                linewidth=2,
+                transform=ax.transAxes,
+            )
+        )
+
+        # 統計情報
+        header_left = f"✓ Exact Match: {exact_matches}/{total} ({exact_rate:.1f}%)"
+        header_mid = f"✗ Mismatch: {mismatch_count}/{total}"
+        header_right = f"Root: {root_rate:.1f}% | Quality: {quality_rate:.1f}%"
+
+        # 左側：完全一致情報
+        ax.text(
+            0.05,
+            0.60,
+            header_left,
+            fontsize=PLOT_FONTSIZE["stats_header"],
+            fontweight="bold",
+            color=PLOT_COLORS["match_text"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        # 中央：不一致情報
+        ax.text(
+            0.40,
+            0.60,
+            header_mid,
+            fontsize=PLOT_FONTSIZE["stats_header"],
+            fontweight="bold",
+            color=PLOT_COLORS["mismatch_text"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        # 右側：詳細情報
+        ax.text(
+            0.70,
+            0.60,
+            header_right,
+            fontsize=PLOT_FONTSIZE["stats_detail"],
+            fontweight="bold",
+            color=PLOT_COLORS["default_text"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        # 凡例（上部）
+        legend_y = 0.25
+        ax.add_patch(
+            patches.Rectangle(
+                (0.05, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["match_bg"],
+                edgecolor=PLOT_COLORS["match_edge"],
+                linewidth=1.5,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.11,
+            legend_y - 0.03,
+            "Match",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        ax.add_patch(
+            patches.Rectangle(
+                (0.25, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["mismatch_bg"],
+                edgecolor=PLOT_COLORS["mismatch_edge"],
+                linewidth=1.5,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.31,
+            legend_y - 0.03,
+            "Mismatch",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        ax.add_patch(
+            patches.Rectangle(
+                (0.48, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["no_match_bg"],
+                edgecolor=PLOT_COLORS["no_match_edge"],
+                linewidth=1,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.54,
+            legend_y - 0.03,
+            "No Match",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+
+    def plot_statistics_comparison(self, save_path: Optional[str] = None):
+        """
+        2つのシーケンスの統計情報を比較表示
+
+        Args:
+            save_path: 保存先パス
+        """
+        stats1 = self.analyzer1.get_statistics()
+        stats2 = self.analyzer2.get_statistics()
+
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+
+        # 1. コード数、ユニークコード数の比較
+        categories = ["Total Chords", "Unique Chords"]
+        seq1_values = [stats1["total_chords"], stats1["unique_chords"]]
+        seq2_values = [stats2["total_chords"], stats2["unique_chords"]]
+
+        x = np.arange(len(categories))
+        width = 0.35
+
+        ax1.bar(x - width / 2, seq1_values, width, label=self.label1, alpha=0.8)
+        ax1.bar(x + width / 2, seq2_values, width, label=self.label2, alpha=0.8)
+        ax1.set_ylabel("Count", fontweight="bold")
+        ax1.set_title("Chord Count Comparison", fontweight="bold")
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(categories)
+        ax1.legend()
+        ax1.grid(True, axis="y", alpha=0.3)
+
+        # 2. 継続時間の比較
+        ax2.bar(
+            [self.label1, self.label2],
+            [stats1["total_duration"], stats2["total_duration"]],
+            color=["#2196F3", "#FF9800"],
+            alpha=0.8,
+        )
+        ax2.set_ylabel("Duration (seconds)", fontweight="bold")
+        ax2.set_title("Total Duration Comparison", fontweight="bold")
+        ax2.grid(True, axis="y", alpha=0.3)
+
+        # 3. 品質分布の比較
+        quality_dist1 = stats1["quality_distribution"]
+        quality_dist2 = stats2["quality_distribution"]
+        all_qualities = set(quality_dist1.keys()) | set(quality_dist2.keys())
+        qualities = sorted(all_qualities)
+
+        seq1_counts = [quality_dist1.get(q, 0) for q in qualities]
+        seq2_counts = [quality_dist2.get(q, 0) for q in qualities]
+
+        x = np.arange(len(qualities))
+        ax3.bar(x - width / 2, seq1_counts, width, label=self.label1, alpha=0.8)
+        ax3.bar(x + width / 2, seq2_counts, width, label=self.label2, alpha=0.8)
+        ax3.set_xlabel("Quality", fontweight="bold")
+        ax3.set_ylabel("Count", fontweight="bold")
+        ax3.set_title("Quality Distribution Comparison", fontweight="bold")
+        ax3.set_xticks(x)
+        ax3.set_xticklabels(qualities, rotation=45)
+        ax3.legend()
+        ax3.grid(True, axis="y", alpha=0.3)
+
+        # 4. 平均コード継続時間の比較
+        ax4.bar(
+            [self.label1, self.label2],
+            [stats1["avg_chord_duration"], stats2["avg_chord_duration"]],
+            color=["#4CAF50", "#9C27B0"],
+            alpha=0.8,
+        )
+        ax4.set_ylabel("Duration (seconds)", fontweight="bold")
+        ax4.set_title("Average Chord Duration", fontweight="bold")
+        ax4.grid(True, axis="y", alpha=0.3)
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            logger.info(f"Statistics comparison plot saved to {save_path}")
+
+        plt.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compare two chord sequences side by side"
+    )
+    parser.add_argument("lab_file1", help="Path to first .lab file")
+    parser.add_argument("lab_file2", help="Path to second .lab file")
+    parser.add_argument(
+        "--output-dir", default="out", help="Output directory for plots"
+    )
+    parser.add_argument("--label1", default=None, help="Label for first sequence")
+    parser.add_argument("--label2", default=None, help="Label for second sequence")
+    parser.add_argument(
+        "--stats", action="store_true", help="Show statistics comparison"
+    )
+    parser.add_argument(
+        "--highlight-diff",
+        action="store_true",
+        help="Highlight differences between sequences",
+    )
+    parser.add_argument(
+        "--show-stats", action="store_true", help="Show statistics in comparison plot"
+    )
+
+    args = parser.parse_args()
+
+    # 出力ディレクトリの作成
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
+    try:
+        # ラベルを設定（固定値で、引数がある場合のみ上書き）
+        label1 = args.label1 or "Ground Truth\n(Control Signal)"
+        label2 = args.label2 or "Estimated Chords\n(Generated Audio)"
+
+        # データの読み込みと分析
+        analyzer1 = ChordSequenceAnalyzer()
+        analyzer1.load_lab_file(args.lab_file1)
+
+        analyzer2 = ChordSequenceAnalyzer()
+        analyzer2.load_lab_file(args.lab_file2)
+
+        # 統計情報の表示
+        if args.stats:
+            stats1 = analyzer1.get_statistics()
+            stats2 = analyzer2.get_statistics()
+
+            print(f"\n=== {label1} Statistics ===")
+            for key, value in stats1.items():
+                if isinstance(value, dict):
+                    print(f"{key}:")
+                    for k, v in value.items():
+                        print(f"  {k}: {v}")
+                else:
+                    print(f"{key}: {value}")
+
+            print(f"\n=== {label2} Statistics ===")
+            for key, value in stats2.items():
+                if isinstance(value, dict):
+                    print(f"{key}:")
+                    for k, v in value.items():
+                        print(f"  {k}: {v}")
+                else:
+                    print(f"{key}: {value}")
+
+        # 比較可視化の作成
+        comparison = ChordSequenceComparison(analyzer1, analyzer2, label1, label2)
+
+        # ファイル名の準備
+        base_name = f"{Path(args.lab_file1).stem}_vs_{Path(args.lab_file2).stem}"
+
+        # 比較プロット
+        comparison_path = output_dir / f"{base_name}_comparison.png"
+        comparison.plot_comparison(
+            save_path=str(comparison_path),
+            highlight_diff=args.highlight_diff,
+            show_stats=args.show_stats,
+        )
+
+        # 統計比較プロット
+        if args.stats:
+            stats_path = output_dir / f"{base_name}_statistics.png"
+            comparison.plot_statistics_comparison(save_path=str(stats_path))
+
+        print(f"\nPlots saved to: {output_dir}")
+
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
