@@ -26,6 +26,8 @@ def set_global_seed(seed: int) -> None:
     """再現性を高めるための乱数シード設定"""
 
     os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -66,6 +68,8 @@ class EvalConfig:
     output_dir: str
     sample_rate: int
     generation: GenerationConfig
+    save_batch_audio: bool = False
+    batch_audio_dir: str = "batch_audio"
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,6 +147,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="処理するバッチ数 (デフォルト: 1)",
+    )
+    parser.add_argument(
+        "--save_batch_audio",
+        action="store_true",
+        help="元のバッチ音源も保存するかどうか",
+    )
+    parser.add_argument(
+        "--batch_audio_dir",
+        type=str,
+        default="batch_audio",
+        help="バッチ音源の保存ディレクトリ (相対: output_dir配下)",
     )
 
     return parser.parse_args()
@@ -547,6 +562,80 @@ def _create_metadata_lines(
     return metadata_lines
 
 
+def _create_batch_metadata_lines(
+    prompt: str,
+    start_seconds: float,
+    total_seconds: float,
+    condition_type: str,
+    condition_data: torch.Tensor,
+    sample_rate: int,
+    batch_idx: int,
+    config: EvalConfig,
+) -> list[str]:
+    """バッチ音源用メタデータ行を生成
+
+    Args:
+        prompt: プロンプト文字列
+        start_seconds: 開始秒数
+        total_seconds: 合計秒数
+        condition_type: コンディションタイプ
+        condition_data: コンディションテンソル
+        sample_rate: サンプルレート
+        batch_idx: バッチインデックス
+        config: 評価設定オブジェクト
+
+    Returns:
+        メタデータ行のリスト
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    metadata_lines = [
+        "=== 元のバッチ音源情報 ===",
+        f"保存時刻: {now}",
+        "",
+        "=== プロンプト情報 ===",
+        f"prompt: {prompt}",
+        "",
+        "=== 時間情報 ===",
+        f"start_seconds: {start_seconds}",
+        f"total_seconds: {total_seconds}",
+        f"duration: {total_seconds - start_seconds}",
+        "",
+        "=== 音源情報 ===",
+        f"sample_rate: {sample_rate}",
+        f"batch_index: {batch_idx}",
+        f"total_samples: {config.num_samples}",
+        "",
+        "=== 条件情報 ===",
+        f"condition_type: {condition_type}",
+        f"condition_shape: {condition_data.shape}",
+        "",
+    ]
+
+    # コンディションタイプに応じた情報を追加
+    if condition_type == CONDITION_KEY_CHORD:
+        try:
+            from main.data.annotation import ChordAnnotation
+
+            chord_annotation = ChordAnnotation(sample_rate=sample_rate)
+            metadata_lines.append("=== コード情報 ===")
+            metadata_lines.append(
+                chord_annotation.chord_timeline_text(
+                    condition_data, start_s=start_seconds, total_s=total_seconds
+                )
+            )
+        except Exception as e:
+            logger.warning(f"コード情報の保存に失敗: {e}")
+            metadata_lines.append("=== コード情報 ===")
+            metadata_lines.append(f"chord_shape: {condition_data.shape}")
+            metadata_lines.append(f"(詳細取得失敗: {e})")
+    else:
+        metadata_lines.append("=== コンディション情報 ===")
+        metadata_lines.append(f"{condition_type}_shape: {condition_data.shape}")
+
+    return metadata_lines
+
+
 def save_results(
     output: torch.Tensor,
     prompts: list[str],
@@ -616,6 +705,74 @@ def save_results(
         logger.info(f"メタデータ保存: {metadata_path}")
 
 
+def save_batch_audio(
+    x_batch: torch.Tensor,
+    prompts: list[str],
+    start_seconds: torch.Tensor,
+    total_seconds: torch.Tensor,
+    condition_data: torch.Tensor,
+    num_samples: int,
+    condition_type: str,
+    config: EvalConfig,
+) -> None:
+    """バッチ音源の保存
+
+    Args:
+        x_batch: バッチ音声テンソル
+        prompts: プロンプトリスト
+        start_seconds: 開始秒のテンソル
+        total_seconds: 合計秒のテンソル
+        condition_data: コンディションテンソル
+        num_samples: 保存するサンプル数
+        condition_type: コンディションタイプ
+        config: 評価設定オブジェクト
+    """
+    logger.info("バッチ音源の保存...")
+
+    # バッチ音源保存ディレクトリの作成
+    output_dir = Path(config.output_dir)
+    batch_audio_dir = output_dir / config.batch_audio_dir
+    batch_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # タイムスタンプを生成（ファイル名の一意性を確保）
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    for i in range(num_samples):
+        # ファイル名の生成（安全な文字のみ使用）
+        safe_prompt = prompts[i].replace(" ", "_").replace("/", "_")[:30]
+
+        # タイムスタンプとインデックスを付けたファイル名
+        file_prefix = f"{timestamp}_batch_{i:03d}"
+
+        # 音声ファイルの保存
+        _save_audio_file(
+            x_batch[i], batch_audio_dir, file_prefix, safe_prompt, config.sample_rate
+        )
+
+        # メタデータの準備
+        start_s = _tensor_to_float(start_seconds[i])
+        total_s = _tensor_to_float(total_seconds[i])
+        condition_tensor_i = condition_data[i].cpu()
+
+        # メタデータ行を生成
+        metadata_lines = _create_batch_metadata_lines(
+            prompts[i],
+            start_s,
+            total_s,
+            condition_type,
+            condition_tensor_i,
+            config.sample_rate,
+            i,  # batch_idx
+            config,
+        )
+
+        # メタデータファイルの保存
+        metadata_path = batch_audio_dir / f"{file_prefix}_{safe_prompt}.txt"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(metadata_lines))
+        logger.info(f"バッチメタデータ保存: {metadata_path}")
+
+
 def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
     """コマンドライン引数から設定オブジェクトを生成
 
@@ -643,6 +800,8 @@ def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
         output_dir=args.output_dir,
         sample_rate=args.sample_rate,
         generation=generation_config,
+        save_batch_audio=args.save_batch_audio,
+        batch_audio_dir=args.batch_audio_dir,
     )
 
 
@@ -695,6 +854,19 @@ def main() -> None:
         x, prompts, start_seconds, total_seconds, condition_data, num_samples = (
             load_validation_data(cond_cfg, config)
         )
+
+        # バッチ音源を保存（オプション）
+        if config.save_batch_audio:
+            save_batch_audio(
+                x,
+                prompts,
+                start_seconds,
+                total_seconds,
+                condition_data,
+                num_samples,
+                condition_type,
+                config,
+            )
 
         # コンディショニングの準備
         conditioning = prepare_conditioning(

@@ -50,6 +50,8 @@ def set_global_seed(seed: int, logger: Optional[logging.Logger] = None) -> None:
     """再現性確保のために乱数関連のシードを統一設定"""
 
     os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
