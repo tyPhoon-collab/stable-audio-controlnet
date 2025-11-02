@@ -9,8 +9,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
 import plotly.subplots as sp
+import torch
 from matplotlib.axes import Axes
 from matplotlib.image import AxesImage
+from torchaudio.functional import highpass_biquad, resample
 
 _DEFAULT_FMIN_HZ = float(librosa.midi_to_hz(0))
 
@@ -20,6 +22,103 @@ def _subsample_indices(length: int, target: int = 100) -> np.ndarray:
         return np.empty(0, dtype=np.int64)
     step = max(1, length // target)
     return np.arange(0, length, step, dtype=np.int64)
+
+
+def _compute_topk_cqt_melody(
+    waveform: torch.Tensor,
+    sample_rate: int,
+    n_bins: int = 128,
+    bins_per_octave: int = 12,
+    topk: int = 4,
+    hpf_cutoff_hz: float = 261.2,
+    magnitude_threshold: float = 0.1,
+    hop_length: int = 512,
+    chunk_duration_s: float | None = 60.0,
+) -> torch.Tensor:
+    """Compute top-k CQT-based melody indices for stereo waveform."""
+    x = highpass_biquad(waveform, sample_rate, cutoff_freq=hpf_cutoff_hz)
+
+    if x.size(0) == 1:
+        x = x.repeat(2, 1)
+
+    fmin = librosa.midi_to_hz(0)
+
+    if chunk_duration_s is None:
+        chunk_samples = x.shape[-1]
+    else:
+        chunk_samples = max(hop_length, int(chunk_duration_s * sample_rate))
+
+    mel_list = []
+    for ch in [0, 1]:
+        channel = x[ch]
+        channel_chunks = []
+
+        for start in range(0, channel.shape[-1], chunk_samples):
+            end = min(start + chunk_samples, channel.shape[-1])
+            chunk = channel[start:end]
+            if chunk.numel() == 0:
+                continue
+
+            x_np = chunk.detach().cpu().numpy().astype(np.float32, copy=False)
+            try:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                    dtype=np.complex64,
+                )
+            except TypeError:
+                C = librosa.cqt(
+                    x_np,
+                    sr=sample_rate,
+                    fmin=fmin,
+                    n_bins=n_bins,
+                    bins_per_octave=bins_per_octave,
+                    hop_length=hop_length,
+                ).astype(np.complex64, copy=False)
+
+            mag = np.abs(C).astype(np.float32, copy=False)
+            if mag.size == 0:
+                continue
+
+            mag_t = torch.from_numpy(mag)
+            max_per_frame = torch.clamp(mag_t.max(dim=0).values, min=1e-8)
+            norm_mag = mag_t / max_per_frame.unsqueeze(0)
+            vals, idx = torch.topk(norm_mag, k=topk, dim=0, largest=True, sorted=True)
+            idx_int = idx.to(torch.int64)
+            rest_mask = vals < magnitude_threshold
+            out = idx_int.clone()
+            out[rest_mask] = -1
+            channel_chunks.append(out)
+
+            del (
+                chunk,
+                x_np,
+                C,
+                mag,
+                mag_t,
+                max_per_frame,
+                norm_mag,
+                vals,
+                idx,
+                idx_int,
+                rest_mask,
+            )
+
+        if channel_chunks:
+            mel_list.append(torch.cat(channel_chunks, dim=1))
+        else:
+            mel_list.append(torch.empty(topk, 0, dtype=torch.int64))
+
+    L, R = mel_list
+    interleaved_channels = []
+    for i in range(topk):
+        interleaved_channels.extend([L[i], R[i]])
+    interleaved = torch.stack(interleaved_channels, dim=0)
+    return interleaved
 
 
 def load_melody_from_cache(
@@ -96,6 +195,182 @@ def load_melody_from_cache(
     metadata["display_duration"] = float(end_time - start_time)
 
     return melody, metadata
+
+
+def load_melody_from_audio(
+    audio_path: str,
+    start_time: float | None = None,
+    end_time: float | None = None,
+    sample_rate: int = 44100,
+    cqt_bins: int = 128,
+    bins_per_octave: int = 12,
+    topk: int = 4,
+    hpf_cutoff_hz: float = 261.2,
+    magnitude_threshold: float = 0.1,
+    hop_length: int = 512,
+) -> Tuple[np.ndarray, Dict]:
+    """
+    音声ファイルからメロディーデータを抽出
+
+    Args:
+        audio_path: 音声ファイルのパス (MP3, WAV, FLAC等)
+        start_time: 開始時刻（秒）
+        end_time: 終了時刻（秒）
+        sample_rate: サンプリングレート
+        cqt_bins: CQT ビン数
+        bins_per_octave: オクターブあたりのビン数
+        topk: Top-k CQT の k 値
+        hpf_cutoff_hz: ハイパスフィルタのカットオフ周波数
+        magnitude_threshold: 大きさのしきい値
+        hop_length: CQT 計算時のホップ長
+
+    Returns:
+        melody: (8, T) int64 配列（範囲指定した場合はスライス）
+        metadata: CQT設定を含むメタデータ
+    """
+    print(f"📂 Loading audio from {audio_path}...")
+
+    # 音声ファイルを読み込み
+    y, sr_orig = librosa.load(audio_path, sr=None, mono=False)  # type: ignore
+
+    # モノラルの場合はステレオに変換
+    if y.ndim == 1:
+        y = np.stack([y, y], axis=0)
+
+    # 期間を計算
+    duration_s = y.shape[1] / sr_orig
+    print(f"   Duration: {duration_s:.2f}s, Original SR: {sr_orig}Hz")
+
+    # リサンプリング（必要な場合）
+    if sr_orig != sample_rate:
+        y_tensor = torch.from_numpy(y).float()
+        y_tensor = resample(y_tensor, orig_freq=sr_orig, new_freq=sample_rate)
+        y = y_tensor.numpy()
+        sr = sample_rate
+    else:
+        y = torch.from_numpy(y).float()
+        sr = sr_orig
+
+    # テンソルに変換
+    if isinstance(y, np.ndarray):
+        y_tensor = torch.from_numpy(y).float()
+    else:
+        y_tensor = y
+
+    # CQT ベースのメロディー計算
+    print("🎵 Computing CQT-based melody...")
+    melody_full = _compute_topk_cqt_melody(
+        y_tensor,
+        sr,
+        n_bins=cqt_bins,
+        bins_per_octave=bins_per_octave,
+        topk=topk,
+        hpf_cutoff_hz=hpf_cutoff_hz,
+        magnitude_threshold=magnitude_threshold,
+        hop_length=hop_length,
+    )
+    melody_full = melody_full.numpy().astype(np.int64)
+
+    # メタデータ生成
+    metadata = {
+        "duration_s": float(duration_s),
+        "sr": sr,
+        "cqt_bins": cqt_bins,
+        "topk": topk,
+        "bins_per_octave": bins_per_octave,
+        "fmin_hz": _DEFAULT_FMIN_HZ,
+        "hop_length": hop_length,
+        "hpf_cutoff_hz": hpf_cutoff_hz,
+        "magnitude_threshold": magnitude_threshold,
+        "drop_vocals": False,
+        "melody_shape": melody_full.shape,
+        "source": "audio_file",
+        "audio_path": audio_path,
+    }
+
+    # 時刻範囲に基づいてメロディをスライス
+    if start_time is None:
+        start_time = 0.0
+    if end_time is None:
+        end_time = duration_s
+
+    assert start_time is not None
+    assert end_time is not None
+
+    # フレーム番号に変換
+    start_frame = max(0, int(start_time * sr / hop_length))
+    end_frame = min(melody_full.shape[1], int(end_time * sr / hop_length))
+
+    # スライス
+    melody = melody_full[:, start_frame:end_frame]
+
+    # メタデータに時間範囲情報を追加
+    metadata["start_time"] = float(start_time)
+    metadata["end_time"] = float(end_time)
+    metadata["display_duration"] = float(end_time - start_time)
+
+    return melody, metadata
+
+
+def load_melody(
+    input_path: str,
+    sample_key: str | None = None,
+    start_time: float | None = None,
+    end_time: float | None = None,
+    sample_rate: int = 44100,
+    cqt_bins: int = 128,
+    bins_per_octave: int = 12,
+    topk: int = 4,
+    hpf_cutoff_hz: float = 261.2,
+    magnitude_threshold: float = 0.1,
+    hop_length: int = 512,
+) -> Tuple[np.ndarray, Dict]:
+    """
+    HDF5キャッシュまたは音声ファイルからメロディーデータを読み込む
+
+    Args:
+        input_path: HDF5ファイルパスまたは音声ファイルパス
+        sample_key: キャッシュの場合のサンプルキー
+        start_time: 開始時刻（秒）
+        end_time: 終了時刻（秒）
+        sample_rate: 音声ファイルの場合のサンプリングレート
+        cqt_bins: CQT ビン数
+        bins_per_octave: オクターブあたりのビン数
+        topk: Top-k CQT の k 値
+        hpf_cutoff_hz: ハイパスフィルタのカットオフ周波数
+        magnitude_threshold: 大きさのしきい値
+        hop_length: CQT 計算時のホップ長
+
+    Returns:
+        melody: (8, T) int64 配列
+        metadata: メタデータ辞書
+    """
+    input_path_obj = Path(input_path)
+
+    # ファイル拡張子で判定
+    if input_path_obj.suffix.lower() == ".h5":
+        # HDF5 キャッシュの場合
+        if sample_key is None:
+            raise ValueError("sample_key is required for HDF5 cache input")
+        print("📊 Using HDF5 cache mode")
+        return load_melody_from_cache(
+            input_path, sample_key, start_time=start_time, end_time=end_time
+        )
+    else:
+        # 音声ファイルの場合
+        print("🎵 Using audio file mode")
+        return load_melody_from_audio(
+            input_path,
+            start_time=start_time,
+            end_time=end_time,
+            sample_rate=sample_rate,
+            cqt_bins=cqt_bins,
+            bins_per_octave=bins_per_octave,
+            topk=topk,
+            hpf_cutoff_hz=hpf_cutoff_hz,
+            magnitude_threshold=magnitude_threshold,
+            hop_length=hop_length,
+        )
 
 
 def _idx_to_hz(idx: int, bins_per_octave: int = 12, fmin: float | None = None) -> float:
@@ -746,15 +1021,18 @@ def visualize_interactive(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Visualize melody cache")
+    parser = argparse.ArgumentParser(description="Visualize melody cache or audio file")
     parser.add_argument(
-        "--cache", type=str, required=True, help="Path to HDF5 melody cache"
+        "--input",
+        type=str,
+        required=True,
+        help="Path to HDF5 melody cache or audio file (mp3/wav/flac/etc.)",
     )
     parser.add_argument(
         "--sample-key",
         type=str,
-        required=True,
-        help="Sample key to visualize",
+        default=None,
+        help="Sample key to visualize (required for HDF5 cache, ignored for audio files)",
     )
     parser.add_argument(
         "--output",
@@ -793,13 +1071,60 @@ def main():
         action="store_true",
         help="Display CQT bin indices as musical note names (equal temperament)",
     )
+    # 音声ファイル処理用パラメータ
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=44100,
+        help="Sample rate for audio file processing (default: 44100)",
+    )
+    parser.add_argument(
+        "--cqt-bins",
+        type=int,
+        default=128,
+        help="CQT bin count (default: 128)",
+    )
+    parser.add_argument(
+        "--topk",
+        type=int,
+        default=4,
+        help="Top-K value for CQT melody extraction (default: 4)",
+    )
+    parser.add_argument(
+        "--hpf-cutoff",
+        type=float,
+        default=261.2,
+        help="High-pass filter cutoff frequency in Hz (default: 261.2)",
+    )
+    parser.add_argument(
+        "--magnitude-threshold",
+        type=float,
+        default=0.1,
+        help="Magnitude threshold for valid notes (default: 0.1)",
+    )
+    parser.add_argument(
+        "--hop-length",
+        type=int,
+        default=512,
+        help="Hop length for CQT computation (default: 512)",
+    )
 
     args = parser.parse_args()
 
     # メロディーデータを読み込み
-    print(f"📂 Loading melody from {args.cache}...")
-    melody, metadata = load_melody_from_cache(
-        args.cache, args.sample_key, start_time=args.start, end_time=args.end
+    print(f"📂 Loading melody from {args.input}...")
+    melody, metadata = load_melody(
+        args.input,
+        sample_key=args.sample_key,
+        start_time=args.start,
+        end_time=args.end,
+        sample_rate=args.sample_rate,
+        cqt_bins=args.cqt_bins,
+        bins_per_octave=12,
+        topk=args.topk,
+        hpf_cutoff_hz=args.hpf_cutoff,
+        magnitude_threshold=args.magnitude_threshold,
+        hop_length=args.hop_length,
     )
     print(f"   Shape: {melody.shape}")
     print(f"   Full duration: {metadata['duration_s']:.2f}s")
@@ -812,7 +1137,10 @@ def main():
     )
     print(f"   Hop length: {metadata['hop_length']} samples")
     print(f"   Total frames: {melody.shape[1]:,}")
-    print(f"   Drop vocals: {metadata['drop_vocals']}")
+    if metadata.get("source") == "audio_file":
+        print(f"   Source: Audio file ({metadata.get('audio_path')})")
+    else:
+        print(f"   Drop vocals: {metadata['drop_vocals']}")
     print(f"   HPF cutoff: {metadata['hpf_cutoff_hz']:.1f} Hz")
     print(f"   Magnitude threshold: {metadata['magnitude_threshold']:.3f}")
 
