@@ -1,7 +1,7 @@
+import csv
 import os
 import random
-import csv
-from functools import partial, cached_property
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -266,6 +266,7 @@ def collate_fn_conditional(
         chord_batch,
     )
 
+
 def collate_fn_mix(
     samples,
     drop_vocals: bool = True,
@@ -302,6 +303,7 @@ def collate_fn_mix(
 
 class GenreMapping:
     """ジャンルマッピングのシングルトンクラス"""
+
     _instance = None
     _mapping = None
     _csv_path = None
@@ -317,11 +319,11 @@ class GenreMapping:
             return self._mapping
 
         mapping = {}
-        with open(csv_path, 'r', encoding='utf-8') as f:
+        with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                track_name = row['Track Name']
-                genre = row['Genre']
+                track_name = row["Track Name"]
+                genre = row["Genre"]
                 mapping[track_name] = genre
 
         self._mapping = mapping
@@ -333,6 +335,9 @@ class GenreMapping:
         if self._mapping is None:
             return default
         return self._mapping.get(track_name, default)
+
+
+MUSIC_PROMPT_CHOICES = ["melodic music", "catchy song", "a song", "music tracks"]
 
 
 def collate_fn_genre(
@@ -369,7 +374,6 @@ def collate_fn_genre(
     prompts = []
 
     for i, sample in enumerate(samples_data):
-        stem_keys = list(sample.keys())
         out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
         outputs.append(out_track)
 
@@ -378,6 +382,37 @@ def collate_fn_genre(
             sample_key = sample_keys[i]
             genre = genre_mapper.get_genre(sample_key)
             prompts.append(f"{genre}")
+        else:
+            prompts.append(prompt_text)
+
+    chord_batch = torch.stack(chord_chunks)
+    return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)
+
+
+def collate_fn_music_prompt(
+    samples,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
+    """固定候補からランダムにプロンプトを選ぶcollate関数"""
+    start_seconds = [x for _, _, x, _, _ in samples]
+    total_seconds = [x for _, _, _, x, _ in samples]
+    chord_chunks = [x for _, x, _, _, _ in samples]
+    samples_data = [x for x, _, _, _, _ in samples]
+
+    if drop_vocals:
+        for sample in samples_data:
+            if "vocals" in sample:
+                sample.pop("vocals")
+
+    outputs = []
+    prompts = []
+
+    for sample in samples_data:
+        out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
+        outputs.append(out_track)
+        if prompt_text is None:
+            prompts.append(random.choice(MUSIC_PROMPT_CHOICES))
         else:
             prompts.append(prompt_text)
 
@@ -417,6 +452,7 @@ if __name__ == "__main__":
 
     # collate_fn_genreをpartialで作成（従来の方法）
     from functools import partial
+
     collate_fn_with_genre = partial(collate_fn_genre, csv_path=csv_path)
 
     dataloader_with_genre = DataLoader(
