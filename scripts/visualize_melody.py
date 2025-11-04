@@ -467,6 +467,35 @@ def _extract_note_segments(track: np.ndarray) -> list[tuple[int, int, int]]:
     return segments
 
 
+def _calculate_ylim(melody: np.ndarray, padding: float = 0.5) -> tuple[float, float]:
+    """
+    有効なデータ値がある範囲を計算し、若干のパディングを加えたy軸範囲を返す
+
+    Args:
+        melody: (topk*2, T) int64 配列
+        padding: パディング（上下それぞれ）
+
+    Returns:
+        (ymin, ymax) のタプル
+    """
+    # 有効なデータ（-1でない値）を抽出
+    valid_data = melody[melody != -1]
+
+    if valid_data.size == 0:
+        # 有効なデータがない場合はデフォルト値
+        return (-0.5, 127.5)
+
+    # 最小値と最大値を取得
+    ymin = float(np.min(valid_data))
+    ymax = float(np.max(valid_data))
+
+    # パディングを加える
+    ymin = max(0, ymin - padding)  # 負にならないようにする
+    ymax = min(127, ymax + padding)  # 127を超えないようにする
+
+    return (ymin, ymax)
+
+
 def _rgba_to_plotly(color: np.ndarray) -> str:
     r, g, b, a = color
     return f"rgba({int(r * 255)}, {int(g * 255)}, {int(b * 255)}, {a:.3f})"
@@ -515,6 +544,9 @@ def visualize_heatmap(melody: np.ndarray, metadata: Dict, output_path: str) -> N
     duration_s = metadata.get("display_duration", metadata["duration_s"])
     times = times + start_s
 
+    # y軸範囲を自動計算（データがある部分のみ）
+    ymin, ymax = _calculate_ylim(melody, padding=0.5)
+
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
     fig.suptitle(
@@ -535,7 +567,7 @@ def visualize_heatmap(melody: np.ndarray, metadata: Dict, output_path: str) -> N
             fontsize=12,
         )
         ax.set_facecolor("#f8f9fa")
-        ax.set_ylim(-0.5, cqt_bins - 0.5)
+        ax.set_ylim(ymin, ymax)
         ax.grid(True, alpha=0.4, axis="x", linestyle="--")
         heatmaps.append(heat)
     axes[1].set_xlabel("Time (s)", fontweight="bold", fontsize=12)
@@ -574,6 +606,9 @@ def visualize_tracks(
     duration_s = metadata.get("display_duration", metadata["duration_s"])
     times = times + start_s
     frame_duration = hop_length / sr if sr > 0 else 0.0
+
+    # y軸範囲を自動計算（データがある部分のみ）
+    ymin, ymax = _calculate_ylim(melody, padding=0.5)
 
     colors = _sample_cmap("Set1", topk)
     channel_labels = ("Left", "Right")
@@ -624,7 +659,7 @@ def visualize_tracks(
                 fontsize=11,
                 framealpha=0.95,
             )
-            ax.set_ylim(-0.5, cqt_bins - 0.5)
+            ax.set_ylim(ymin, ymax)
             if times.size > 0:
                 ax.set_xlim(times[0], times[-1] + frame_duration)
             invalid_mask = np.all(
@@ -639,8 +674,8 @@ def visualize_tracks(
                 ax.plot(
                     times,
                     data,
-                    linewidth=3,
-                    alpha=0.5,
+                    linewidth=1.0,
+                    alpha=0.7,
                     label=f"Top-{k + 1}",
                     color=colors[k],
                     marker="o" if times.size < 200 else None,
@@ -651,7 +686,7 @@ def visualize_tracks(
                 melody[[2 * k + ch_idx for k in range(topk)], :] == -1, axis=0
             )
             _highlight_invalid_regions(ax, times, invalid_mask)
-            ax.set_ylim(-5, cqt_bins + 5)
+            ax.set_ylim(ymin - 5, ymax + 5)
             ax.grid(True, alpha=0.5, linestyle="--", linewidth=0.8)
             ax.legend(
                 loc="upper right",
@@ -736,13 +771,21 @@ def visualize_stats(melody: np.ndarray, metadata: Dict, output_path: str) -> Non
 
     # 2. 周波数分布（ヒストグラム）
     ax2 = fig.add_subplot(gs[0, 1])
+    # y軸範囲を自動計算（データがある部分のみ）
+    ymin_hist, ymax_hist = _calculate_ylim(melody, padding=0.5)
     for k in range(topk):
         for ch in range(2):
             data = melody[2 * k + ch, :]
             valid_data = data[data != -1]
             if len(valid_data) > 0:
                 label = f"Top-{k + 1} {'L' if ch == 0 else 'R'}"
-                ax2.hist(valid_data, bins=30, alpha=0.5, label=label)
+                ax2.hist(
+                    valid_data,
+                    bins=int(ymax_hist - ymin_hist + 1),
+                    alpha=0.5,
+                    label=label,
+                    range=(ymin_hist, ymax_hist),
+                )
     ax2.set_xlabel("CQT Bin Index", fontweight="bold")
     ax2.set_ylabel("Frequency", fontweight="bold")
     ax2.set_title("CQT Bin Distribution")
@@ -783,8 +826,12 @@ def visualize_stats(melody: np.ndarray, metadata: Dict, output_path: str) -> Non
             else:
                 boxplot_data.append([0])
 
+    # y軸範囲を自動計算（データがある部分のみ）
+    ymin, ymax = _calculate_ylim(melody, padding=2)
+
     ax4.boxplot(boxplot_data, tick_labels=labels)
     ax4.set_ylabel("CQT Bin Index", fontweight="bold")
+    ax4.set_ylim(ymin, ymax)
     ax4.set_title("CQT Bin Range Distribution")
     ax4.grid(axis="y", alpha=0.3)
     plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45, ha="right", fontsize=9)
