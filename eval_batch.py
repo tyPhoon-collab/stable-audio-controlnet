@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 import random
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,38 +9,20 @@ from typing import Any
 import hydra
 import numpy as np
 import torch
-import torchaudio
 from stable_audio_tools.inference.generation import generate_diffusion_cond
+
+from main.eval_utils import (
+    save_audio_file,
+    set_global_seed,
+    tensor_to_float,
+)
 
 # ロガー設定
 logger = logging.getLogger(__name__)
 
 # 定数
-
 CONDITION_KEY_CHORD = "chord"
 CONDITION_KEY_MELODY = "melody"
-
-
-def set_global_seed(seed: int) -> None:
-    """再現性を高めるための乱数シード設定"""
-
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    if torch.backends.cudnn.is_available():
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-    try:
-        torch.use_deterministic_algorithms(True)
-    except (RuntimeError, AttributeError) as err:
-        logger.warning("Deterministic algorithms not fully enforced: %s", err)
 
 
 @dataclass
@@ -434,43 +415,6 @@ def generate_audio(
     return output
 
 
-def _tensor_to_float(value: Any) -> float:
-    """テンソル値をfloatに変換
-
-    Args:
-        value: テンソル値またはスカラー値
-
-    Returns:
-        float値
-    """
-    return float(value.item() if torch.is_tensor(value) else value)
-
-
-def _save_audio_file(
-    audio: torch.Tensor,
-    output_dir: Path,
-    file_prefix: str,
-    safe_prompt: str,
-    sample_rate: int,
-) -> Path:
-    """音声ファイルを保存
-
-    Args:
-        audio: 音声テンソル
-        output_dir: 出力ディレクトリ
-        file_prefix: ファイルプレフィックス（タイムスタンプ+インデックス）
-        safe_prompt: 安全なプロンプト文字列
-        sample_rate: サンプルレート
-
-    Returns:
-        保存されたファイルのパス
-    """
-    audio_path = output_dir / f"{file_prefix}_{safe_prompt}.wav"
-    torchaudio.save(str(audio_path), audio.cpu(), sample_rate=sample_rate)
-    logger.info(f"音声ファイル保存: {audio_path}")
-    return audio_path
-
-
 def _create_metadata_lines(
     prompt: str,
     start_seconds: float,
@@ -675,13 +619,13 @@ def save_results(
         file_prefix = f"{timestamp}_{i:03d}"
 
         # 音声ファイルの保存
-        _save_audio_file(
+        save_audio_file(
             output[i], output_dir, file_prefix, safe_prompt, config.sample_rate
         )
 
         # メタデータの準備
-        start_s = _tensor_to_float(start_seconds[i])
-        total_s = _tensor_to_float(total_seconds[i])
+        start_s = tensor_to_float(start_seconds[i])
+        total_s = tensor_to_float(total_seconds[i])
         condition_tensor_i = condition_data[i].cpu()
 
         # メタデータ行を生成
@@ -745,13 +689,13 @@ def save_batch_audio(
         file_prefix = f"{timestamp}_batch_{i:03d}"
 
         # 音声ファイルの保存
-        _save_audio_file(
+        save_audio_file(
             x_batch[i], batch_audio_dir, file_prefix, safe_prompt, config.sample_rate
         )
 
         # メタデータの準備
-        start_s = _tensor_to_float(start_seconds[i])
-        total_s = _tensor_to_float(total_seconds[i])
+        start_s = tensor_to_float(start_seconds[i])
+        total_s = tensor_to_float(total_seconds[i])
         condition_tensor_i = condition_data[i].cpu()
 
         # メタデータ行を生成

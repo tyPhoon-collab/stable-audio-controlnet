@@ -29,44 +29,27 @@ Stable Audio ControlNet カスタム評価スクリプト
 
 import argparse
 import logging
-import os
-import random
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import hydra
-import numpy as np
 import torch
-import torchaudio
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
 from main.data.annotation import ChordAnnotation
-
-
-def set_global_seed(seed: int, logger: Optional[logging.Logger] = None) -> None:
-    """再現性確保のために乱数関連のシードを統一設定"""
-
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    if torch.backends.cudnn.is_available():
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-    try:
-        torch.use_deterministic_algorithms(True)
-    except (RuntimeError, AttributeError) as err:
-        if logger:
-            logger.warning("Deterministic algorithms not fully enforced: %s", err)
+from main.eval_utils import (
+    create_base_metadata_lines,
+    create_chord_metadata_lines,
+    generate_safe_filename,
+    normalize_chord_symbol,
+    parse_chord_progression,
+    save_audio_file,
+    save_chord_lab_file,
+    save_metadata_file,
+    set_global_seed,
+)
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -79,18 +62,6 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
         ],
     )
     return logging.getLogger(__name__)
-
-
-def parse_chord_progression(chord_string: str) -> List[str]:
-    """
-    コード進行の文字列をパースしてリストに変換
-    例: "C,Am,F,G" -> ["C", "Am", "F", "G"]
-    """
-    # 区切り文字で分割（カンマ、スペース、パイプなどに対応）
-    chords = re.split(r"[,|\s]+", chord_string.strip())
-    # 空文字列を除去
-    chords = [chord.strip() for chord in chords if chord.strip()]
-    return chords
 
 
 def validate_inputs(args: argparse.Namespace, logger: logging.Logger) -> bool:
@@ -154,15 +125,19 @@ def create_chord_conditioning(
     chord_progression: Optional[str],
     duration: float,
     sample_rate: int = 44100,
-    logger: logging.Logger = None,
+    logger: Optional[logging.Logger] = None,
 ):
     """コード進行からconditioningを作成"""
     if not chord_progression:
-        logger.info("コード進行が指定されていません。空のconditioningを使用します。")
+        if logger:
+            logger.info(
+                "コード進行が指定されていません。空のconditioningを使用します。"
+            )
         return None
 
     chords = parse_chord_progression(chord_progression)
-    logger.info(f"コード進行を処理中: {chords}")
+    if logger:
+        logger.info(f"コード進行を処理中: {chords}")
 
     # 各コードの継続時間を計算（均等に分割）
     chord_duration = duration / len(chords)
@@ -180,7 +155,8 @@ def create_chord_conditioning(
         normalized_chord = normalize_chord_symbol(chord)
         annotations.append((start_time, end_time, normalized_chord))
 
-    logger.info(f"作成されたアノテーション: {annotations}")
+    if logger:
+        logger.info(f"作成されたアノテーション: {annotations}")
 
     # 音響信号の長さを計算
     sample_length = int(duration * sample_rate)
@@ -190,73 +166,13 @@ def create_chord_conditioning(
         annotations, sample_length, frame_rate=4
     )
 
-    logger.info(f"コードテンソル形状: {chord_tensor.shape}")
+    if logger:
+        logger.info(f"コードテンソル形状: {chord_tensor.shape}")
 
     return {
         "data": chord_tensor.to(model.device),
         "target_size": sample_length // model.model.pretransform.downsampling_ratio,
     }
-
-
-def normalize_chord_symbol(chord: str) -> str:
-    """
-    簡単なコード記号を標準形式に正規化
-    例: "C" -> "C:maj", "Am" -> "A:min", "F#m" -> "F#:min"
-    """
-    chord = chord.strip()
-
-    # 既に標準形式の場合はそのまま返す
-    if ":" in chord:
-        return chord
-
-    # 無音の場合
-    if chord.upper() == "N" or chord == "":
-        return "N"
-
-    # マイナーコードの処理
-    if chord.endswith("m") and len(chord) >= 2:
-        root = chord[:-1]
-        return f"{root}:min"
-
-    # セブンスコードの処理
-    if chord.endswith("7"):
-        if chord.endswith("m7"):
-            root = chord[:-2]
-            return f"{root}:min7"
-        elif chord.endswith("maj7"):
-            root = chord[:-4]
-            return f"{root}:maj7"
-        else:
-            root = chord[:-1]
-            return f"{root}:7"
-
-    # その他の和音質
-    if chord.endswith("dim"):
-        root = chord[:-3]
-        return f"{root}:dim"
-    elif chord.endswith("aug"):
-        root = chord[:-3]
-        return f"{root}:aug"
-    elif chord.endswith("sus4"):
-        root = chord[:-4]
-        return f"{root}:sus4"
-    elif chord.endswith("sus2"):
-        root = chord[:-4]
-        return f"{root}:sus2"
-
-    # デフォルトはメジャーコード
-    return f"{chord}:maj"
-
-
-def generate_safe_filename(prompt: str, index: int) -> str:
-    """安全なファイル名を生成"""
-    # 特殊文字を除去・置換
-    safe_prompt = re.sub(r'[<>:"/\\|?*]', "_", prompt)
-    safe_prompt = re.sub(r"\s+", "_", safe_prompt)
-    # 長すぎる場合は切り詰める
-    if len(safe_prompt) > 50:
-        safe_prompt = safe_prompt[:50]
-    return f"output_{index:03d}_{safe_prompt}"
 
 
 def generate_audio(
@@ -316,50 +232,56 @@ def save_results(
     safe_filename = generate_safe_filename(prompt, index)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # 出力ディレクトリの作成
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # 音声ファイルの保存
-    audio_path = Path(args.output_dir) / f"{safe_filename}_{timestamp}.wav"
-    torchaudio.save(str(audio_path), output_audio.cpu(), sample_rate=44100)
-    logger.info(f"音声ファイルを保存: {audio_path}")
+    _ = save_audio_file(
+        output_audio,
+        output_dir,
+        timestamp,
+        safe_filename,
+        44100,
+    )
+
+    # メタデータ行を生成（共通部分）
+    metadata_lines = create_base_metadata_lines(
+        prompt=prompt,
+        seed=args.seed,
+        steps=args.steps,
+        cfg_scale=args.cfg_scale,
+        sampler_type=args.sampler_type,
+        device=args.device,
+        sample_rate=44100,
+        exp_config=args.exp_config,
+        checkpoint_path=args.checkpoint,
+    )
+
+    # 時間情報を追加（customizeではdurationのみ）
+    metadata_lines.extend(
+        [
+            "=== 時間情報 ===",
+            f"duration: {duration} seconds",
+            "",
+        ]
+    )
+
+    # コード進行情報を追加
+    metadata_lines.extend(create_chord_metadata_lines(chord_progression, duration))
 
     # メタデータファイルの保存
-    metadata_lines = [
-        f"prompt: {prompt}",
-        f"chord_progression: {chord_progression or 'None'}",
-        f"duration: {duration} seconds",
-        f"seed: {args.seed}",
-        f"steps: {args.steps}",
-        f"cfg_scale: {args.cfg_scale}",
-        f"sampler_type: {args.sampler_type}",
-        f"generated_at: {datetime.now().isoformat()}",
-        "---",
-    ]
-
-    if chord_progression:
-        metadata_lines.append("chord_progression_details:")
-        chords = parse_chord_progression(chord_progression)
-        chord_duration = duration / len(chords)
-        for i, chord in enumerate(chords):
-            start_time = i * chord_duration
-            end_time = (i + 1) * chord_duration
-            metadata_lines.append(f"  {start_time:.2f}-{end_time:.2f}s: {chord}")
-
-    metadata_path = Path(args.output_dir) / f"{safe_filename}_{timestamp}.txt"
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(metadata_lines))
-    logger.info(f"メタデータファイルを保存: {metadata_path}")
+    save_metadata_file(
+        metadata_lines,
+        output_dir,
+        timestamp,
+        safe_filename,
+    )
 
     # .labファイル（TSV形式）の生成
-    if chord_progression:
-        lab_path = Path(args.output_dir) / f"{safe_filename}_{timestamp}.lab"
-        with open(lab_path, "w", encoding="utf-8") as f:
-            chords = parse_chord_progression(chord_progression)
-            chord_duration = duration / len(chords)
-            for i, chord in enumerate(chords):
-                start_time = i * chord_duration
-                end_time = (i + 1) * chord_duration
-                normalized_chord = normalize_chord_symbol(chord)
-                f.write(f"{start_time}\t{end_time}\t{normalized_chord}\n")
-        logger.info(f".labファイルを保存: {lab_path}")
+    save_chord_lab_file(
+        chord_progression, duration, output_dir, timestamp, safe_filename
+    )
 
 
 def main():
@@ -450,7 +372,7 @@ def main():
 
     try:
         # 乱数シードを統一
-        set_global_seed(args.seed, logger)
+        set_global_seed(args.seed)
 
         # 入力の検証
         if not validate_inputs(args, logger):
