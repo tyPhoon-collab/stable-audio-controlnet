@@ -128,18 +128,14 @@ class ChordAnnotation:
     def chord_timeline_text(
         self,
         chord_tensor: torch.Tensor,
-        start_s: float = 0.0,
-        total_s: Optional[float] = None,
-        frame_rate: Optional[float] = None,
+        frame_rate: float = 4.0,
     ) -> str:
         """
         和音テンソル (T_frames, 3) を可読なタイムライン文字列に整形。
 
         引数:
             chord_tensor: (T, 3) [root, quality, inversion]
-            start_s: 区間の開始秒
-            total_s: 区間の総秒（frame_rate 未指定時に推定に使用）
-            frame_rate: 明示のフレームレート（優先して使用）
+            frame_rate: フレームレート（デフォルト: 4.0 Hz）
 
         返り値:
             譜面風のタイムライン文字列
@@ -148,13 +144,6 @@ class ChordAnnotation:
             return "(no chord data)"
 
         T = chord_tensor.shape[0]
-        if frame_rate is None:
-            if total_s is not None and total_s > 0:
-                frame_rate_eff = T / float(total_s)
-            else:
-                frame_rate_eff = 1.0
-        else:
-            frame_rate_eff = float(frame_rate)
 
         lines = []
         t = 0
@@ -168,12 +157,12 @@ class ChordAnnotation:
                 if self.idx_to_chord_symbol(int(r2), int(q2), int(v2)) != sym:
                     break
                 t += 1
-            s_time = start_s + seg_start / frame_rate_eff
-            e_time = start_s + t / frame_rate_eff
+            s_time = seg_start / frame_rate
+            e_time = t / frame_rate
             lines.append(f"{s_time:8.3f} - {e_time:8.3f} : {sym}")
 
         header = [
-            f"chord_frame_rate_estimate: {frame_rate_eff:.3f} Hz",
+            f"frame_rate: {frame_rate:.3f} Hz",
             f"frames: {T}",
         ]
         return "\n".join(header + ["chords:"] + lines)

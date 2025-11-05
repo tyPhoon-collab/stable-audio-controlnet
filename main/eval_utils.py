@@ -360,9 +360,7 @@ def try_add_chord_timeline_metadata(
         chord_annotation = ChordAnnotation(sample_rate=sample_rate)
         metadata_lines.append("=== コード情報 ===")
         metadata_lines.append(
-            chord_annotation.chord_timeline_text(
-                condition_data, start_s=start_seconds, total_s=total_seconds
-            )
+            chord_annotation.chord_timeline_text(condition_data, frame_rate=4.0)
         )
     except Exception as e:
         logger.warning(f"コード情報の保存に失敗: {e}")

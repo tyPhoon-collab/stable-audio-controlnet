@@ -470,3 +470,21 @@ if __name__ == "__main__":
         print(f"  Chord batch: {chord_batch.shape}")
         if i >= 2:  # 3バッチだけテスト
             break
+
+    print("\n=== 音楽プロンプト付きのテスト ===")
+
+    dataloader_with_music_prompt = DataLoader(
+        dataset_with_chords,
+        batch_size=2,
+        pin_memory=True,
+        collate_fn=collate_fn_music_prompt,
+        num_workers=0,
+    )
+    for i, batch in enumerate(dataloader_with_music_prompt):
+        print(f"Batch {i}: {len(batch)} elements")
+        outputs, prompts, start_seconds, total_seconds, chord_batch = batch
+        print(f"  Audio outputs: {outputs.shape}")
+        print(f"  Prompts: {prompts}")
+        print(f"  Chord batch: {chord_batch.shape}")
+        if i >= 2:  # 3バッチだけテスト
+            break

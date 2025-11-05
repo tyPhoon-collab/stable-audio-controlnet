@@ -8,7 +8,12 @@ from torch import nn
 
 class EmbeddingChordConditioner(Conditioner):
     def __init__(
-        self, output_dim: int = 64, embed_dim: int = 128, conv_channels: int = 32
+        self,
+        output_dim: int = 64,
+        embed_dim: int = 128,
+        conv_channels: int = 32,
+        conv_kernel_size: int = 3,
+        conv_padding: int = 1,
     ):
         super().__init__(conv_channels, output_dim)
 
@@ -17,7 +22,9 @@ class EmbeddingChordConditioner(Conditioner):
 
         # 直接25種類のコードをEmbedding
         self.chord_embedding = nn.Embedding(self.num_chords, embed_dim)
-        self.conv = nn.Conv1d(embed_dim, conv_channels, kernel_size=3, padding=1)
+        self.conv = nn.Conv1d(
+            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
+        )
 
     def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:
         """

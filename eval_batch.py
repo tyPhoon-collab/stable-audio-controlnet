@@ -490,9 +490,7 @@ def _create_metadata_lines(
             chord_annotation = ChordAnnotation(sample_rate=sample_rate)
             metadata_lines.append("=== コード情報 ===")
             metadata_lines.append(
-                chord_annotation.chord_timeline_text(
-                    condition_data, start_s=start_seconds, total_s=total_seconds
-                )
+                chord_annotation.chord_timeline_text(condition_data, frame_rate=4.0)
             )
         except Exception as e:
             logger.warning(f"コード情報の保存に失敗: {e}")
@@ -504,6 +502,51 @@ def _create_metadata_lines(
         metadata_lines.append(f"{condition_type}_shape: {condition_data.shape}")
 
     return metadata_lines
+
+
+def save_condition_data(
+    condition_data: torch.Tensor,
+    condition_type: str,
+    output_dir: Path,
+    file_prefix: str,
+    start_seconds: float,
+    total_seconds: float,
+    sample_rate: int,
+) -> None:
+    """コンディション（条件）データを保存
+
+    Args:
+        condition_data: コンディションテンソル
+        condition_type: コンディションタイプ ("chord" or "melody")
+        output_dir: 出力ディレクトリ
+        file_prefix: ファイルプレフィックス
+        start_seconds: 開始秒数
+        total_seconds: 合計秒数
+        sample_rate: サンプルレート
+    """
+    try:
+        if condition_type == CONDITION_KEY_CHORD:
+            # コードの場合、.lab形式で保存
+            from main.data.annotation import ChordAnnotation
+
+            chord_annotation = ChordAnnotation(sample_rate=sample_rate)
+            lab_text = chord_annotation.chord_timeline_text(
+                condition_data,
+                frame_rate=4.0,
+            )
+
+            lab_path = output_dir / f"{file_prefix}_condition.lab"
+            with open(lab_path, "w", encoding="utf-8") as f:
+                f.write(lab_text)
+            logger.info(f"コード条件を保存: {lab_path}")
+        else:
+            # メロディなど他の条件はNumpy形式で保存
+            npy_path = output_dir / f"{file_prefix}_condition_{condition_type}.npy"
+            np.save(npy_path, condition_data.cpu().numpy())
+            logger.info(f"メロディ条件を保存: {npy_path}")
+
+    except Exception as e:
+        logger.warning(f"コンディションデータの保存に失敗: {e}")
 
 
 def _create_batch_metadata_lines(
@@ -564,9 +607,7 @@ def _create_batch_metadata_lines(
             chord_annotation = ChordAnnotation(sample_rate=sample_rate)
             metadata_lines.append("=== コード情報 ===")
             metadata_lines.append(
-                chord_annotation.chord_timeline_text(
-                    condition_data, start_s=start_seconds, total_s=total_seconds
-                )
+                chord_annotation.chord_timeline_text(condition_data, frame_rate=4.0)
             )
         except Exception as e:
             logger.warning(f"コード情報の保存に失敗: {e}")
@@ -608,6 +649,10 @@ def save_results(
     output_dir = Path(config.output_dir)
     output_dir.mkdir(exist_ok=True)
 
+    # コンディション保存用ディレクトリを作成
+    condition_dir = output_dir / "conditions"
+    condition_dir.mkdir(exist_ok=True)
+
     # タイムスタンプを生成（ファイル名の一意性を確保）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -648,6 +693,17 @@ def save_results(
             f.write("\n".join(metadata_lines))
         logger.info(f"メタデータ保存: {metadata_path}")
 
+        # コンディションデータの保存
+        save_condition_data(
+            condition_tensor_i,
+            condition_type,
+            condition_dir,
+            file_prefix,
+            start_s,
+            total_s,
+            config.sample_rate,
+        )
+
 
 def save_batch_audio(
     x_batch: torch.Tensor,
@@ -677,6 +733,10 @@ def save_batch_audio(
     output_dir = Path(config.output_dir)
     batch_audio_dir = output_dir / config.batch_audio_dir
     batch_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # バッチのコンディション保存用ディレクトリを作成
+    batch_condition_dir = batch_audio_dir / "conditions"
+    batch_condition_dir.mkdir(parents=True, exist_ok=True)
 
     # タイムスタンプを生成（ファイル名の一意性を確保）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -715,6 +775,17 @@ def save_batch_audio(
         with open(metadata_path, "w", encoding="utf-8") as f:
             f.write("\n".join(metadata_lines))
         logger.info(f"バッチメタデータ保存: {metadata_path}")
+
+        # バッチのコンディションデータも保存
+        save_condition_data(
+            condition_tensor_i,
+            condition_type,
+            batch_condition_dir,
+            file_prefix,
+            start_s,
+            total_s,
+            config.sample_rate,
+        )
 
 
 def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
