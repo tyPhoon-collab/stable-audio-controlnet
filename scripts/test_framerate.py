@@ -60,29 +60,6 @@ def test_framerate_comparison():
             print(f"  平均変化間隔: {avg_interval:.2f}秒")
 
 
-def test_memory_usage():
-    """メモリ使用量の詳細テスト"""
-
-    print("\n=== メモリ使用量詳細 ===")
-
-    # 171秒の楽曲でのメモリ使用量計算
-    duration = 171  # 秒
-    frame_rates = [25, 50, 100, 200, 500]
-
-    for rate in frame_rates:
-        # 基本形式 (3要素)
-        basic_frames = int(duration * rate)
-        basic_memory = basic_frames * 3 * 8 / (1024 * 1024)  # long型8バイト
-
-        # ワンホット形式 (29要素)
-        onehot_frames = basic_frames
-        onehot_memory = onehot_frames * 29 * 4 / (1024 * 1024)  # float32型4バイト
-
-        print(
-            f"{rate:3d}Hz: 基本={basic_memory:5.2f}MB, ワンホット={onehot_memory:5.2f}MB, フレーム数={basic_frames:,}"
-        )
-
-
 def analyze_chord_changes():
     """実際の和音変化パターンを分析"""
 
@@ -132,5 +109,4 @@ def analyze_chord_changes():
 
 if __name__ == "__main__":
     test_framerate_comparison()
-    test_memory_usage()
     analyze_chord_changes()

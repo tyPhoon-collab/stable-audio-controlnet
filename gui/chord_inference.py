@@ -14,6 +14,17 @@ from stable_audio_tools.inference.generation import generate_diffusion_cond
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from main.data.annotation import ChordAnnotation
+from main.eval.chord_metrics import (
+    CHORD_INVERSION_BINS,
+    CHORD_ONEHOT_DIM,
+    CHORD_QUALITY_BINS,
+    CHORD_ROOT_BINS,
+    MAX_CHORD_INVERSION,
+    NUM_CHORD_QUALITIES,
+    NUM_CHORD_ROOTS,
+    quality_to_number,
+    root_to_number,
+)
 
 
 class ChordInferenceEngine:
@@ -105,8 +116,8 @@ class ChordInferenceEngine:
         current_time = 0.0
         for root_str, quality_str, inversion, duration in chord_sequence:
             # 文字列から数値に変換
-            root = self.chord_annotation.CHORD_ROOT_MAP.get(root_str, -1)
-            quality = self.chord_annotation.CHORD_QUALITY_MAP.get(quality_str, -1)
+            root = root_to_number(root_str)
+            quality = quality_to_number(quality_str)
 
             start_frame = int(current_time * self.chord_frame_rate)
             end_frame = int((current_time + duration) * self.chord_frame_rate)
@@ -138,16 +149,24 @@ class ChordInferenceEngine:
 
         # Map -1 to last index in its group
         root_idx = torch.where(
-            root >= 0, root, torch.full_like(root, 12)
-        )  # 0..11, 12 for N
+            (root >= 0) & (root < NUM_CHORD_ROOTS),
+            root,
+            torch.full_like(root, NUM_CHORD_ROOTS),
+        )
         qual_idx = torch.where(
-            qual >= 0, qual, torch.full_like(qual, 9)
-        )  # 0..8, 9 for N
-        # inversion: 0..6 valid, others -> 7
-        inv_idx = torch.where((inv >= 0) & (inv <= 6), inv, torch.full_like(inv, 7))
+            (qual >= 0) & (qual < NUM_CHORD_QUALITIES),
+            qual,
+            torch.full_like(qual, NUM_CHORD_QUALITIES),
+        )
+        inv_idx = torch.where(
+            (inv >= 0) & (inv <= MAX_CHORD_INVERSION),
+            inv,
+            torch.full_like(inv, MAX_CHORD_INVERSION + 1),
+        )
 
-        C_root, C_qual, C_inv = 13, 10, 8
-        C_total = C_root + C_qual + C_inv
+        C_root = CHORD_ROOT_BINS
+        C_qual = CHORD_QUALITY_BINS
+        C_total = CHORD_ONEHOT_DIM
         out = torch.zeros((B, C_total, T), device=device, dtype=torch.float32)
 
         # scatter for each group
@@ -162,7 +181,7 @@ class ChordInferenceEngine:
         out_qual.scatter_(1, qual_idx.long().unsqueeze(1), 1.0)
 
         # inversion
-        out_inv = out[:, C_root + C_qual :]
+        out_inv = out[:, C_root + C_qual : C_root + C_qual + CHORD_INVERSION_BINS]
         out_inv.zero_()
         out_inv.scatter_(1, inv_idx.long().unsqueeze(1), 1.0)
 

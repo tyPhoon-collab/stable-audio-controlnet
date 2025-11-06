@@ -17,12 +17,20 @@ import colorsys
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from main.eval.chord_metrics import (
+    CHROMATIC_SCALE,
+    LabAnnotation,
+    chord_match_flags_by_overlap,
+    parse_chord_label,
+    root_to_number,
+)
 
 # ログ設定
 logging.basicConfig(
@@ -31,9 +39,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # === コード進行分析のための定数 ===
-
-# クロマティックスケール
-CHROMATIC_SCALE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 # 和音品質のHueマッピング（0-360度）
 QUALITY_HUE_MAP = {
@@ -119,6 +124,7 @@ class ChordSequenceAnalyzer:
 
     def __init__(self):
         self.data = None
+        self.annotations: List[LabAnnotation] = []
         self.total_duration = 0
 
     def load_lab_file(self, file_path: str) -> pd.DataFrame:
@@ -145,16 +151,25 @@ class ChordSequenceAnalyzer:
             data["end_time"] = pd.to_numeric(data["end_time"])
             data["duration"] = data["end_time"] - data["start_time"]
 
+            # アノテーションを保持して再利用
+            starts = data["start_time"].astype(float).tolist()
+            ends = data["end_time"].astype(float).tolist()
+            chord_series = data["chord"].fillna("N")
+            chords = chord_series.astype(str).tolist()
+            self.annotations = list(zip(starts, ends, chords))
+
             # コード解析
-            data["root"], data["quality"] = zip(
-                *data["chord"].apply(self.parse_chord_symbol)
-            )
+            parsed = [parse_chord_label(chord) for chord in chords]
+            data["root"] = [root for root, _ in parsed]
+            data["quality"] = [quality for _, quality in parsed]
 
             # 数値インデックスの追加
-            data["root_num"] = data["root"].apply(self.root_to_number)
+            data["root_num"] = data["root"].apply(root_to_number)
 
             self.data = data
-            self.total_duration = data["end_time"].max()
+            self.total_duration = (
+                float(data["end_time"].max()) if not data.empty else 0.0
+            )
 
             logger.info(
                 f"Loaded {len(data)} chord segments, total duration: {self.total_duration:.2f}s"
@@ -164,46 +179,6 @@ class ChordSequenceAnalyzer:
         except Exception as e:
             logger.error(f"Error loading .lab file: {e}")
             raise
-
-    def parse_chord_symbol(self, chord_symbol: str) -> Tuple[str, str]:
-        """
-        コード記号をルートと質に分解
-
-        Args:
-            chord_symbol: 'C:maj', 'A:min7' などのコード記号
-
-        Returns:
-            (root, quality): ルート音と和音の質
-        """
-        if chord_symbol == "N" or pd.isna(chord_symbol):
-            return "N", "N"
-
-        if ":" in chord_symbol:
-            root, quality = chord_symbol.split(":", 1)
-        else:
-            root = chord_symbol
-            quality = "maj"
-
-        return root.strip(), quality.strip()
-
-    def root_to_number(self, root: str) -> int:
-        """ルート音を数値に変換（C=0, C#=1, ..., B=11）"""
-        if root == "N":
-            return -1
-
-        root_normalized = (
-            root.replace("Db", "C#")
-            .replace("Eb", "D#")
-            .replace("Gb", "F#")
-            .replace("Ab", "G#")
-            .replace("Bb", "A#")
-        )
-
-        try:
-            return CHROMATIC_SCALE.index(root_normalized)
-        except ValueError:
-            logger.warning(f"Unknown root: {root}, treating as C")
-            return 0
 
     def get_statistics(self) -> Dict:
         """コード進行の統計情報を取得"""
@@ -443,57 +418,6 @@ class ChordSequenceComparison:
         ax.spines["left"].set_visible(False)
         ax.grid(True, axis="x", alpha=0.3, linestyle="--")
 
-    def _calculate_chord_match(
-        self, row1: pd.Series, row2: pd.Series
-    ) -> Tuple[bool, bool, bool]:
-        """
-        2つのコードの一致度を判定
-
-        Args:
-            row1: シーケンス1のコードデータ
-            row2: シーケンス2のコードデータ
-
-        Returns:
-            (full_match, root_match, quality_match): 完全一致、根音一致、品質一致
-        """
-        full_match = row1["chord"] == row2["chord"]
-        root_match = row1["root"] == row2["root"]
-        quality_match = row1["quality"] == row2["quality"]
-
-        return full_match, root_match, quality_match
-
-    def _find_matching_chord(
-        self, row: pd.Series, data_ref: pd.DataFrame
-    ) -> Optional[pd.Series]:
-        """
-        指定されたコードに対応する参照データのコードを探す
-        時間範囲の重なりが最も大きいコードを対応させる
-
-        Args:
-            row: メインのコードデータ
-            data_ref: 参照データ
-
-        Returns:
-            対応するコード、見つからない場合はNone
-        """
-        max_overlap = 0
-        best_match = None
-
-        # 参照データの各コードとの時間的な重なりを計算
-        for _, ref_row in data_ref.iterrows():
-            # 重なり区間の開始と終了
-            overlap_start = max(row["start_time"], ref_row["start_time"])
-            overlap_end = min(row["end_time"], ref_row["end_time"])
-
-            # 重なりがある場合
-            if overlap_start < overlap_end:
-                overlap = overlap_end - overlap_start
-                if overlap > max_overlap:
-                    max_overlap = overlap
-                    best_match = ref_row
-
-        return best_match
-
     def _plot_comparison_with_diff(
         self, figsize=(20, 14), save_path: Optional[str] = None, show_stats: bool = True
     ):
@@ -505,6 +429,13 @@ class ChordSequenceComparison:
             save_path: 保存先パス
             show_stats: 統計情報を表示するか
         """
+        if self.data1 is None or self.data2 is None:
+            logger.error("Data not available for plotting")
+            return None
+
+        data1 = self.data1
+        data2 = self.data2
+
         max_duration = max(self.analyzer1.total_duration, self.analyzer2.total_duration)
 
         fig = plt.figure(figsize=figsize)
@@ -524,16 +455,18 @@ class ChordSequenceComparison:
         ax1 = fig.add_subplot(gs[1] if show_stats else gs[0])
         ax2 = fig.add_subplot(gs[2] if show_stats else gs[1])
 
+        annotations1 = self.analyzer1.annotations
+        annotations2 = self.analyzer2.annotations
+
         # シーケンス1のマッチ情報を計算
-        matches, root_matches, quality_matches = self._calculate_matches(
-            self.data1, self.data2
+        matches, root_matches, quality_matches = chord_match_flags_by_overlap(
+            annotations1, annotations2
         )
 
         # シーケンス1を描画
         self._plot_sequence_with_diff(
             ax1,
-            self.data1,
-            self.data2,
+            data1,
             self.label1,
             max_duration,
             matches,
@@ -541,15 +474,14 @@ class ChordSequenceComparison:
         )
 
         # シーケンス2のマッチ情報を計算
-        matches2, root_matches2, quality_matches2 = self._calculate_matches(
-            self.data2, self.data1
+        matches2, root_matches2, quality_matches2 = chord_match_flags_by_overlap(
+            annotations2, annotations1
         )
 
         # シーケンス2を描画
         self._plot_sequence_with_diff(
             ax2,
-            self.data2,
-            self.data1,
+            data2,
             self.label2,
             max_duration,
             matches2,
@@ -569,44 +501,10 @@ class ChordSequenceComparison:
         plt.close()
         return fig
 
-    def _calculate_matches(
-        self, data_main: pd.DataFrame, data_ref: pd.DataFrame
-    ) -> Tuple[List[bool], List[bool], List[bool]]:
-        """
-        2つのデータセット間のマッチ情報を計算
-
-        Args:
-            data_main: メインのコード進行
-            data_ref: 参照のコード進行
-
-        Returns:
-            (matches, root_matches, quality_matches): マッチ情報のタプル
-        """
-        matches = []
-        root_matches = []
-        quality_matches = []
-
-        for _, row_main in data_main.iterrows():
-            matching_row = self._find_matching_chord(row_main, data_ref)
-            if matching_row is not None:
-                full_match, root_match, quality_match = self._calculate_chord_match(
-                    row_main, matching_row
-                )
-                matches.append(full_match)
-                root_matches.append(root_match)
-                quality_matches.append(quality_match)
-            else:
-                matches.append(False)
-                root_matches.append(False)
-                quality_matches.append(False)
-
-        return matches, root_matches, quality_matches
-
     def _plot_sequence_with_diff(
         self,
         ax,
         data_main: pd.DataFrame,
-        data_ref: pd.DataFrame,
         label: str,
         max_duration: float,
         matches: List[bool],
@@ -618,7 +516,6 @@ class ChordSequenceComparison:
         Args:
             ax: matplotlib軸
             data_main: メインのデータ
-            data_ref: 参照データ
             label: ラベル
             max_duration: 最大継続時間
             matches: 一致フラグのリスト
