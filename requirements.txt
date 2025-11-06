@@ -14,6 +14,7 @@ hydra-colorlog
 pytorch-lightning==2.1.0
 bitsandbytes
 huggingface_hub[cli]
+tokenizers==0.19.1
 
 # For T5EncoderModel
 soxr
@@ -28,3 +29,6 @@ mir_eval
 seaborn
 plotly
 pandas
+
+# Testing
+pytest
