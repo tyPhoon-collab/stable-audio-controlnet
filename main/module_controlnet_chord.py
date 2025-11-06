@@ -6,9 +6,9 @@ from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.loggers import WandbLogger
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 from stable_audio_tools.inference.sampling import get_alphas_sigmas
+from stable_audio_tools.models.conditioners import Conditioner
 from torch.utils.data import DataLoader
 
-from main.chord_conditioner import EmbeddingChordConditioner
 from main.controlnet.pretrained import get_pretrained_controlnet_model
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
 
@@ -28,6 +28,7 @@ class Model(pl.LightningModule):
 
     def __init__(
         self,
+        chord_conditioner: Conditioner,
         # Optimizer parameters
         lr: float,
         lr_beta1: float,
@@ -56,7 +57,8 @@ class Model(pl.LightningModule):
             controlnet_types=["chord"],
             depth_factor=depth_factor,
         )
-        model.conditioner.conditioners["chord"] = EmbeddingChordConditioner()
+        model.conditioner.conditioners["chord"] = chord_conditioner
+        self.chord_conditioner = chord_conditioner
         self.model_config = model_config
         self.sample_size = model_config["sample_size"]
         self.sample_rate = model_config["sample_rate"]

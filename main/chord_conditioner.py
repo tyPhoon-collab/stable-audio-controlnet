@@ -12,8 +12,8 @@ class EmbeddingChordConditioner(Conditioner):
         output_dim: int = 64,
         embed_dim: int = 128,
         conv_channels: int = 32,
-        conv_kernel_size: int = 3,
-        conv_padding: int = 1,
+        conv_kernel_size: int = 7,
+        conv_padding: int = 3,
     ):
         super().__init__(conv_channels, output_dim)
 

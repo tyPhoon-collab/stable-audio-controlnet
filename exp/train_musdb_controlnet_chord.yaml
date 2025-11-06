@@ -16,6 +16,8 @@ model:
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
   depth_factor: 0.2
+  chord_conditioner:
+    _target_: main.chord_conditioner.EmbeddingChordConditioner
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule
