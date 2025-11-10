@@ -33,8 +33,6 @@ class EmbeddingChordConditioner(Conditioner):
                 quality: 0 (maj), 1 (min) or -1 (N)
                 inversion: not used
         """
-        self.to(device)
-
         chords_data = chords[0]["data"]
         target_size = chords[0]["target_size"]
 
@@ -63,19 +61,66 @@ class EmbeddingChordConditioner(Conditioner):
         return x, attention_mask
 
 
-if __name__ == "__main__":
-    # テストコード
-    conditioner = EmbeddingChordConditioner(output_dim=768, embed_dim=16)
-    chords = [
-        torch.tensor(
-            [
-                [0, 0, 0],  # C maj
-                [4, 1, 0],  # E min
-                [7, 0, 0],  # G maj
-                [-1, -1, 0],  # N
-                [11, 1, 0],  # B min
-            ]
+class SeparatedEmbeddingChordConditioner(Conditioner):
+    def __init__(
+        self,
+        output_dim: int = 64,
+        embed_dim: int = 128,
+        conv_channels: int = 32,
+        conv_kernel_size: int = 7,
+        conv_padding: int = 3,
+    ):
+        super().__init__(conv_channels, output_dim)
+
+        # root: 0-11 + 1 (for N)
+        # quality: 0=maj,1=min,2=N
+        self.root_embedding = nn.Embedding(13, embed_dim // 2)
+        self.quality_embedding = nn.Embedding(3, embed_dim // 2)
+
+        self.conv = nn.Conv1d(
+            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
         )
-    ]
-    output, mask = conditioner(chords, device="cpu")
-    print(output.shape)
+
+    def encode_chords(self, chords_data: torch.Tensor):
+        """
+        chords_data: (T_frames, 3) -> [root, quality, inversion]
+        root: 0-11 or -1 (N)
+        quality: 0 (maj), 1 (min), or -1 (N)
+        """
+        # root: map -1 -> 12
+        roots = chords_data[:, 0].clone()
+        roots[roots == -1] = 12
+        # quality: map -1 -> 2
+        qualities = chords_data[:, 1].clone()
+        qualities[qualities == -1] = 2
+        return roots.long(), qualities.long()
+
+    def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:
+        chords_data = chords[0]["data"]
+        target_size = chords[0]["target_size"]
+
+        roots, qualities = self.encode_chords(chords_data)
+
+        # 埋め込み結合
+        root_emb = self.root_embedding(roots)
+        quality_emb = self.quality_embedding(qualities)
+        x = torch.cat([root_emb, quality_emb], dim=-1)  # (T_frames, embed_dim)
+
+        x = x.transpose(0, 1).unsqueeze(0)  # (1, embed_dim, T_frames)
+        x = self.conv(x)  # (1, conv_channels, T_frames)
+        x = x.transpose(1, 2).squeeze(0)  # (T_frames, conv_channels)
+
+        x = self.proj_out(x)  # (T_frames, output_dim)
+        x = x.transpose(0, 1)  # (output_dim, T_frames)
+
+        # target_size にリサイズ
+        x = F.interpolate(
+            x.unsqueeze(0),
+            size=target_size,
+            mode="linear",
+            align_corners=False,
+        )  # (1, output_dim, target_size)
+
+        attention_mask = torch.ones(1, target_size, device=device)
+
+        return x, attention_mask

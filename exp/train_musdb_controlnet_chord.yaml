@@ -9,15 +9,16 @@ log_every_n_steps: 200
 
 model:
   _target_: main.module_controlnet_chord.Model
-  lr: 1e-5
+  lr: 5e-5
   lr_beta1: 0.95
   lr_beta2: 0.999
   lr_eps: 1e-6
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
-  depth_factor: 0.2
+  depth_factor: 0.5
   chord_conditioner:
-    _target_: main.chord_conditioner.EmbeddingChordConditioner
+    # _target_: main.chord_conditioner.EmbeddingChordConditioner
+    _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule

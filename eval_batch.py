@@ -778,6 +778,8 @@ def main() -> None:
                     f"Unexpected batch format with {len(batch)} elements (期待値: 5)"
                 )
 
+            logger.info(f"サンプル {generated_samples + 1} の処理開始...")
+
             x, prompts, start_seconds, total_seconds, condition_data = batch
             x = torch.clip(x, -1, 1)
 

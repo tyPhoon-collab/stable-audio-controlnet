@@ -149,6 +149,27 @@ def frame_accuracy(
     return matches, total, skipped
 
 
+def frame_root_accuracy(
+    predictions: Sequence[str],
+    references: Sequence[str],
+    ignore_label: Optional[str] = None,
+) -> Tuple[int, int, int]:
+    """Compute root-only matches, evaluated frames, and skipped frames."""
+    total = 0
+    matches = 0
+    skipped = 0
+    for pred, ref in zip(predictions, references):
+        if ignore_label is not None and ref == ignore_label:
+            skipped += 1
+            continue
+        total += 1
+        pred_root, _ = parse_chord_label(pred)
+        ref_root, _ = parse_chord_label(ref)
+        if pred_root == ref_root:
+            matches += 1
+    return matches, total, skipped
+
+
 def normalize_root(root: str) -> str:
     """Normalize chord roots (e.g., flats to sharps, capitalization)."""
     if not root:
@@ -305,7 +326,9 @@ def evaluate_pair(
     if not pred_frames or not ref_frames:
         return {
             "accuracy": 0.0,
+            "root_accuracy": 0.0,
             "matches": 0,
+            "root_matches": 0,
             "frames": 0,
             "skipped_frames": 0,
             "frame_rate": frame_rate,
@@ -319,10 +342,18 @@ def evaluate_pair(
         ref_frames[:length],
         ignore_label=ignore_label,
     )
+    root_matches, root_total, root_skipped = frame_root_accuracy(
+        pred_frames[:length],
+        ref_frames[:length],
+        ignore_label=ignore_label,
+    )
     accuracy = matches / total if total > 0 else 0.0
+    root_accuracy = root_matches / root_total if root_total > 0 else 0.0
     return {
         "accuracy": accuracy,
+        "root_accuracy": root_accuracy,
         "matches": matches,
+        "root_matches": root_matches,
         "frames": total,
         "skipped_frames": skipped,
         "frame_rate": frame_rate,
@@ -347,6 +378,7 @@ def evaluate_directory(
         raise FileNotFoundError(f"Prediction directory not found: {pred_path}")
     per_file: Dict[str, Dict[str, float | int | str]] = {}
     total_matches = 0
+    total_root_matches = 0
     total_frames = 0
     total_skipped = 0
     missing_predictions: List[str] = []
@@ -358,12 +390,18 @@ def evaluate_directory(
         metrics = evaluate_pair(predicted_lab, reference_lab, frame_rate, ignore_label)
         per_file[reference_lab.name] = metrics
         total_matches += int(metrics["matches"])
+        total_root_matches += int(metrics["root_matches"])
         total_frames += int(metrics["frames"])
         total_skipped += int(metrics["skipped_frames"])
     overall_accuracy = total_matches / total_frames if total_frames > 0 else 0.0
+    overall_root_accuracy = (
+        total_root_matches / total_frames if total_frames > 0 else 0.0
+    )
     return {
         "overall_accuracy": overall_accuracy,
+        "overall_root_accuracy": overall_root_accuracy,
         "matches": total_matches,
+        "root_matches": total_root_matches,
         "frames": total_frames,
         "skipped_frames": total_skipped,
         "frame_rate": frame_rate,
@@ -387,6 +425,7 @@ __all__ = [
     "annotations_duration",
     "lab_to_frame_labels",
     "frame_accuracy",
+    "frame_root_accuracy",
     "parse_chord_label",
     "normalize_root",
     "normalize_quality",

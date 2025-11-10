@@ -70,6 +70,7 @@ class Model(pl.LightningModule):
 
         for cond_id, conditioner in self.model.conditioner.conditioners.items():
             if cond_id == "chord":
+                print(f"Setting conditioner '{cond_id}' to trainable.")
                 conditioner.requires_grad_(True)
                 conditioner.train()
             else:

@@ -14,7 +14,7 @@ model:
   lr_eps: 1e-6
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
-  depth_factor: 0.2
+  depth_factor: 0.5
 
 datamodule:
   _target_: main.module_controlnet_melody.WebDatasetDatamodule
