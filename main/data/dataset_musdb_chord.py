@@ -1,4 +1,3 @@
-import csv
 import os
 import random
 from functools import partial
@@ -6,11 +5,11 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 import webdataset as wds
-from torch.utils.data import DataLoader
 from torchaudio.functional import resample
 from webdataset.autodecode import torch_audio
 
 from .annotation import ChordAnnotation
+from .common_mapping import DescriptionMapping, GenreMapping
 
 
 def _fn_resample(sample, sample_rate):
@@ -301,42 +300,6 @@ def collate_fn_mix(
     return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)
 
 
-class GenreMapping:
-    """ジャンルマッピングのシングルトンクラス"""
-
-    _instance = None
-    _mapping = None
-    _csv_path = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def load_mapping(self, csv_path: str):
-        """CSVファイルからジャンルマッピングを読み込む"""
-        if self._mapping is not None and self._csv_path == csv_path:
-            return self._mapping
-
-        mapping = {}
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                track_name = row["Track Name"]
-                genre = row["Genre"]
-                mapping[track_name] = genre
-
-        self._mapping = mapping
-        self._csv_path = csv_path
-        return mapping
-
-    def get_genre(self, track_name: str, default: str = "Unknown") -> str:
-        """トラック名からジャンルを取得"""
-        if self._mapping is None:
-            return default
-        return self._mapping.get(track_name, default)
-
-
 MUSIC_PROMPT_CHOICES = ["melodic music", "catchy song", "a song", "music tracks"]
 
 
@@ -420,71 +383,50 @@ def collate_fn_music_prompt(
     return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)
 
 
-if __name__ == "__main__":
-    # .labファイルのディレクトリを指定
-    lab_directory = "/app/data/musdb_chord_mixed"
-    csv_path = "/app/data/tracklist.csv"
+def collate_fn_description(
+    samples,
+    csv_path: str,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
+    """説明文をテキストプロンプトとして利用するcollate関数
 
-    print("=== 和音アノテーション付きのテスト（.labファイル使用） ===")
-    dataset_with_chords = create_musdb_dataset_with_chords(
-        path="/app/data/musdb18hq/train.tar",
-        sample_rate=44100,
-        lab_dir=lab_directory,
-        chunk_dur=47.57,
-        chord_frame_rate=24.0,
-    )
-    dataloader_with_chords = DataLoader(
-        dataset_with_chords,
-        batch_size=2,
-        pin_memory=True,
-        collate_fn=collate_fn_mix,
-        num_workers=0,
-    )
-    for i, batch in enumerate(dataloader_with_chords):
-        print(f"Batch {i}: {len(batch)} elements")
-        outputs, prompts, start_seconds, total_seconds, chord_batch = batch
-        print(f"  Audio outputs: {outputs.shape}")
-        print(f"  Chord batch: {chord_batch.shape}")
-        if i >= 3:  # 3バッチだけテスト
-            break
+    Args:
+        samples: バッチサンプル
+        csv_path: 説明文が含まれるCSVファイルのパス
+        drop_vocals: ボーカルトラックを除去するか
+        prompt_text: カスタムプロンプト（Noneの場合は説明文を使用）
+    """
+    # 説明文マッピングを読み込み
+    description_mapper = DescriptionMapping()
+    description_mapper.load_mapping(csv_path)
 
-    print("\n=== ジャンル情報付きのテスト ===")
+    # 和音アノテーション付きの形式のみサポート
+    start_seconds = [x for _, _, x, _, _ in samples]
+    total_seconds = [x for _, _, _, x, _ in samples]
+    chord_chunks = [x for _, x, _, _, _ in samples]
+    sample_keys = [x for _, _, _, _, x in samples]
+    samples_data = [x for x, _, _, _, _ in samples]
 
-    # collate_fn_genreをpartialで作成（従来の方法）
-    from functools import partial
+    if drop_vocals:
+        for sample in samples_data:
+            if "vocals" in sample:
+                sample.pop("vocals")
 
-    collate_fn_with_genre = partial(collate_fn_genre, csv_path=csv_path)
+    outputs = []
+    prompts = []
 
-    dataloader_with_genre = DataLoader(
-        dataset_with_chords,
-        batch_size=2,
-        pin_memory=True,
-        collate_fn=collate_fn_with_genre,
-        num_workers=0,
-    )
-    for i, batch in enumerate(dataloader_with_genre):
-        print(f"Batch {i}: {len(batch)} elements")
-        outputs, prompts, start_seconds, total_seconds, chord_batch = batch
-        print(f"  Audio outputs: {outputs.shape}")
-        print(f"  Prompts: {prompts}")
-        print(f"  Chord batch: {chord_batch.shape}")
-        if i >= 2:  # 3バッチだけテスト
-            break
+    for i, sample in enumerate(samples_data):
+        out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
+        outputs.append(out_track)
 
-    print("\n=== 音楽プロンプト付きのテスト ===")
+        if prompt_text is None:
+            # sample_keyから説明文を取得
+            sample_key = sample_keys[i]
+            description = description_mapper.get_description(sample_key)
+            prompts.append(description if description else "")
+        else:
+            prompts.append(prompt_text)
 
-    dataloader_with_music_prompt = DataLoader(
-        dataset_with_chords,
-        batch_size=2,
-        pin_memory=True,
-        collate_fn=collate_fn_music_prompt,
-        num_workers=0,
-    )
-    for i, batch in enumerate(dataloader_with_music_prompt):
-        print(f"Batch {i}: {len(batch)} elements")
-        outputs, prompts, start_seconds, total_seconds, chord_batch = batch
-        print(f"  Audio outputs: {outputs.shape}")
-        print(f"  Prompts: {prompts}")
-        print(f"  Chord batch: {chord_batch.shape}")
-        if i >= 2:  # 3バッチだけテスト
-            break
+    chord_batch = torch.stack(chord_chunks)
+    return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)

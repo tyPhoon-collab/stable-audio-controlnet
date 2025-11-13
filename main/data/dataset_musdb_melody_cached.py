@@ -12,7 +12,6 @@ HDF5 キャッシュからメロディデータを読み込むデータセット
   )
 """
 
-import csv
 import random
 from functools import partial
 from pathlib import Path
@@ -25,6 +24,8 @@ from torch import Tensor
 from torch.utils.data import IterableDataset
 from torchaudio.functional import resample
 from webdataset.autodecode import torch_audio
+
+from .common_mapping import DescriptionMapping, GenreMapping
 
 
 def _fn_resample(sample, sample_rate: int):
@@ -334,42 +335,6 @@ def collate_fn_melody_mix(
     )
 
 
-class GenreMapping:
-    """ジャンルマッピングのシングルトンクラス"""
-
-    _instance = None
-    _mapping = None
-    _csv_path = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def load_mapping(self, csv_path: str):
-        """CSVファイルからジャンルマッピングを読み込む"""
-        if self._mapping is not None and self._csv_path == csv_path:
-            return self._mapping
-
-        mapping = {}
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                track_name = row["Track Name"]
-                genre = row["Genre"]
-                mapping[track_name] = genre
-
-        self._mapping = mapping
-        self._csv_path = csv_path
-        return mapping
-
-    def get_genre(self, track_name: str, default: str = "Unknown") -> str:
-        """トラック名からジャンルを取得"""
-        if self._mapping is None:
-            return default
-        return self._mapping.get(track_name, default)
-
-
 def collate_fn_genre_melody(
     samples,
     csv_path: str,
@@ -412,6 +377,52 @@ def collate_fn_genre_melody(
             sample_key = sample_keys[i]
             genre = genre_mapper.get_genre(sample_key)
             prompts.append(f"{genre}")
+        else:
+            prompts.append(prompt_text)
+
+    melody_batch = torch.stack(melody_chunks)
+    return (
+        torch.concat(outputs),
+        prompts,
+        start_seconds,
+        total_seconds,
+        melody_batch,
+    )
+
+
+def collate_fn_description_melody(
+    samples,
+    csv_path: str,
+    drop_vocals: bool = True,
+    prompt_text: str | None = None,
+):
+    """説明文をテキストプロンプトとして利用するメロディ付き collate 関数"""
+
+    description_mapper = DescriptionMapping()
+    description_mapper.load_mapping(csv_path)
+
+    start_seconds = [x for _, _, x, _, _ in samples]
+    total_seconds = [x for _, _, _, x, _ in samples]
+    melody_chunks = [x for _, x, _, _, _ in samples]
+    sample_keys = [x for _, _, _, _, x in samples]
+    samples_data = [x for x, _, _, _, _ in samples]
+
+    if drop_vocals:
+        for sample in samples_data:
+            if "vocals" in sample:
+                sample.pop("vocals")
+
+    outputs = []
+    prompts = []
+
+    for i, sample in enumerate(samples_data):
+        out_track = torch.stack(list(sample.values())).sum(dim=0, keepdim=True)
+        outputs.append(out_track)
+
+        if prompt_text is None:
+            sample_key = sample_keys[i]
+            description = description_mapper.get_description(sample_key)
+            prompts.append(description if description else "")
         else:
             prompts.append(prompt_text)
 
