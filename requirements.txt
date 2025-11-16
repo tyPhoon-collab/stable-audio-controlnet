@@ -23,6 +23,7 @@ soxr
 librosa
 matplotlib
 numpy
+frechet_audio_distance
 
 # For music visualization and analysis
 mir_eval

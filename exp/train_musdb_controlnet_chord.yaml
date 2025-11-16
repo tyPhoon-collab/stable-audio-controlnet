@@ -3,9 +3,9 @@
 train: True
 sample_rate: 44100
 chunk_dur: 47.55446713
-chord_frame_rate: 4.0
+chord_frame_rate: 21.53320315
 
-log_every_n_steps: 200
+log_every_n_steps: 500
 
 model:
   _target_: main.module_controlnet_chord.Model
@@ -15,7 +15,8 @@ model:
   lr_eps: 1e-6
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
-  depth_factor: 0.5
+  depth_factor: 0.6
+  chord_frame_rate: ${chord_frame_rate}
   chord_conditioner:
     # _target_: main.chord_conditioner.EmbeddingChordConditioner
     _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
@@ -45,11 +46,15 @@ datamodule:
   batch_size_val: 1
   collate_fn:
     # _target_: main.data.dataset_musdb_chord.collate_fn_genre
-    _target_: main.data.dataset_musdb_chord.collate_fn_music_prompt
-    _partial_: True
+    # _target_: main.data.dataset_musdb_chord.collate_fn_music_prompt
+    # _partial_: True
     # csv_path: "/app/data/tracklist.csv"
+    _target_: main.data.dataset_musdb_chord.collate_fn_description
+    _partial_: True
+    csv_path: "/app/data/description.csv"
+    drop_vocals: True
   drop_last: True
-  num_workers: 4
+  num_workers: 1
   pin_memory: True
   persistent_workers: True
   multiprocessing_context: spawn
@@ -97,7 +102,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 200
+  max_epochs: 100
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null

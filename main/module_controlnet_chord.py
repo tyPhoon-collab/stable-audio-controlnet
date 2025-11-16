@@ -38,6 +38,7 @@ class Model(pl.LightningModule):
         # Model parameters
         depth_factor: float,
         cfg_dropout_prob: float,
+        chord_frame_rate: float,
     ):
         super().__init__()
 
@@ -62,7 +63,7 @@ class Model(pl.LightningModule):
         self.model_config = model_config
         self.sample_size = model_config["sample_size"]
         self.sample_rate = model_config["sample_rate"]
-        # self.chord_frame_rate = model_config["chord_frame_rate"]
+        self.chord_frame_rate = chord_frame_rate
 
         self.model = model
         self.model.model.model.requires_grad_(False)
@@ -79,6 +80,19 @@ class Model(pl.LightningModule):
 
         self.model.pretransform.requires_grad_(False)
         self.model.pretransform.eval()
+
+        self.save_hyperparameters(
+            {
+                "lr": lr,
+                "lr_beta1": lr_beta1,
+                "lr_beta2": lr_beta2,
+                "lr_eps": lr_eps,
+                "lr_weight_decay": lr_weight_decay,
+                "depth_factor": depth_factor,
+                "cfg_dropout_prob": cfg_dropout_prob,
+                "chord_frame_rate": chord_frame_rate,
+            }
+        )
 
     def configure_optimizers(self):
         params = list(self.model.model.controlnet.parameters())
@@ -161,6 +175,22 @@ class Model(pl.LightningModule):
         loss = self.step(batch)
         self.log("valid_loss", loss)
         return loss
+
+    def on_after_backward(self):
+        super().on_after_backward()
+
+        controlnet = self.model.model.controlnet
+        logs = {}
+
+        if controlnet.conv_in.weight.grad is not None:
+            logs["grad_norm/conv_in"] = controlnet.conv_in.weight.grad.norm(2)
+
+        for idx, conv_out in enumerate(controlnet.conv_outs):
+            if conv_out.weight.grad is not None:
+                logs[f"grad_norm/conv_outs_{idx}"] = conv_out.weight.grad.norm(2)
+
+        if logs:
+            self.log_dict(logs, on_step=True, on_epoch=False)
 
 
 # ================================================================================================

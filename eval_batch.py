@@ -324,6 +324,7 @@ def _create_metadata_lines(
     batch_idx: int,
     sample_idx: int,
     config: EvalConfig,
+    chord_frame_rate: float,
 ) -> list[str]:
     """メタデータ行を生成
 
@@ -388,7 +389,9 @@ def _create_metadata_lines(
             chord_annotation = ChordAnnotation(sample_rate=sample_rate)
             metadata_lines.append("=== コード情報 ===")
             metadata_lines.append(
-                chord_annotation.chord_timeline_text(condition_data, frame_rate=4.0)
+                chord_annotation.chord_timeline_text(
+                    condition_data, frame_rate=chord_frame_rate
+                )
             )
         except Exception as e:
             logger.warning(f"コード情報の保存に失敗: {e}")
@@ -411,6 +414,7 @@ def save_condition_data(
     start_seconds: float,
     total_seconds: float,
     sample_rate: int,
+    chord_frame_rate: float,
 ) -> None:
     """コンディション（条件）データを保存
 
@@ -432,7 +436,7 @@ def save_condition_data(
             chord_annotation = ChordAnnotation(sample_rate=sample_rate)
             lab_text = chord_annotation.chord_tensor_to_lab_format(
                 condition_data,
-                frame_rate=4.0,
+                frame_rate=chord_frame_rate,
             )
 
             # wavファイルと同じ名前（{file_prefix}_{safe_prompt}）で保存
@@ -460,6 +464,7 @@ def _create_batch_metadata_lines(
     sample_rate: int,
     batch_idx: int,
     config: EvalConfig,
+    chord_frame_rate: float,
 ) -> list[str]:
     """バッチ音源用メタデータ行を生成
 
@@ -509,7 +514,9 @@ def _create_batch_metadata_lines(
             chord_annotation = ChordAnnotation(sample_rate=sample_rate)
             metadata_lines.append("=== コード情報 ===")
             metadata_lines.append(
-                chord_annotation.chord_timeline_text(condition_data, frame_rate=4.0)
+                chord_annotation.chord_timeline_text(
+                    condition_data, frame_rate=chord_frame_rate
+                )
             )
         except Exception as e:
             logger.warning(f"コード情報の保存に失敗: {e}")
@@ -532,6 +539,7 @@ def save_results(
     num_samples: int,
     condition_type: str,
     config: EvalConfig,
+    chord_frame_rate: float,
     sample_offset: int = 0,
 ) -> None:
     """結果の保存
@@ -578,6 +586,7 @@ def save_results(
             global_index,
             global_index,
             config,
+            chord_frame_rate=chord_frame_rate,
         )
 
         metadata_path = output_dir / f"{file_prefix}_{safe_prompt}.txt"
@@ -594,6 +603,7 @@ def save_results(
             start_s,
             total_s,
             config.sample_rate,
+            chord_frame_rate=chord_frame_rate,
         )
 
 
@@ -606,6 +616,7 @@ def save_batch_audio(
     num_samples: int,
     condition_type: str,
     config: EvalConfig,
+    chord_frame_rate: float,
     sample_offset: int = 0,
 ) -> None:
     """バッチ音源の保存
@@ -650,6 +661,7 @@ def save_batch_audio(
             config.sample_rate,
             global_index,
             config,
+            chord_frame_rate=chord_frame_rate,
         )
 
         metadata_path = output_dir / f"{file_prefix}_{safe_prompt}.txt"
@@ -666,6 +678,7 @@ def save_batch_audio(
             start_s,
             total_s,
             config.sample_rate,
+            chord_frame_rate=chord_frame_rate,
         )
 
 
@@ -745,6 +758,10 @@ def main() -> None:
         condition_type = _detect_condition_type(model)
         logger.info(f"コンディションタイプ: {condition_type}")
 
+        # モデルからchord_frame_rateを取得
+        # chord_frame_rate = model.hparams.chord_frame_rate
+        chord_frame_rate = model.hparams.get("chord_frame_rate", 24.0)
+
         # バリデーションデータローダーを取得（batch_size=1前提）
         datamodule = hydra.utils.instantiate(cond_cfg["datamodule"])
         val_dataloader = datamodule.val_dataloader()
@@ -814,6 +831,7 @@ def main() -> None:
                     condition_type,
                     config,
                     sample_offset=generated_samples,
+                    chord_frame_rate=chord_frame_rate,
                 )
 
             conditioning = prepare_conditioning(
@@ -845,6 +863,7 @@ def main() -> None:
                 condition_type,
                 config,
                 sample_offset=generated_samples,
+                chord_frame_rate=chord_frame_rate,
             )
 
             generated_samples += 1

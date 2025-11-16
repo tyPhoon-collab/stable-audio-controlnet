@@ -163,7 +163,7 @@ def create_chord_conditioning(
 
     # コードテンソルを作成
     chord_tensor = chord_annotation.create_chord_tensor(
-        annotations, sample_length, frame_rate=4
+        annotations, sample_length, frame_rate=model.hparams.chord_frame_rate
     )
 
     if logger:

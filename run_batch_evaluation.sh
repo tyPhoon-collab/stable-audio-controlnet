@@ -16,8 +16,9 @@
 #   --exp-config CONFIG        実験設定名 (デフォルト: train_musdb_controlnet_chord)
 #   --num-samples N            生成サンプル数 (デフォルト: 5)
 #   --num-batches N            処理バッチ数 (デフォルト: 2)
-#   --output-dir DIR           出力ディレクトリ (デフォルト: out)
-#   --chord-dict DICT          和音辞書 (デフォルト: submission)
+#   --output-dir-parent DIR    出力ディレクトリの親ディレクトリ (デフォルト: out)
+#   --chord-dict DICT          和音辞書 (デフォルト: small)
+#   --chord-frame-rate RATE    和音フレームレート (デフォルト: 24.0)
 #   --cleanup                  失敗時に出力ディレクトリをクリーンアップ
 #   --help                     ヘルプを表示
 #
@@ -31,21 +32,21 @@
 
 set -e
 
-# 設定ファイルの読み込み
-source config.sh
+MODEL_CONTAINER="stable-audio-controlnet-stable-audio-controlnet-1"
+ACR_CONTAINER="ismir2019-large-vocabulary-chord-recognition-acr-1"
 
-# デフォルト設定
-EXP_CONFIG="$EXP_CONFIG_DEFAULT"
+EXP_CONFIG="train_musdb_controlnet_chord"
+NUM_SAMPLES=5
+NUM_BATCHES=1
+OUTPUT_DIR_PARENT="out"
+CHORD_DICT="small"
+CHORD_FRAME_RATE=24.0
 CHECKPOINT=""
-NUM_SAMPLES="$NUM_SAMPLES_DEFAULT"
-NUM_BATCHES="$NUM_BATCHES_DEFAULT"
-OUTPUT_DIR="$OUTPUT_DIR_DEFAULT"
-CHORD_DICT="$CHORD_DICT_DEFAULT"
 CLEANUP=false
 
 # 出力ディレクトリを日付でネストさせる
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-OUTPUT_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
+OUTPUT_DIR="${OUTPUT_DIR_PARENT}/${TIMESTAMP}"
 
 # カラー定義
 RED='\033[0;31m'
@@ -54,25 +55,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# ロギング関数
-log_info() {
-    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S') INFO]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S') SUCCESS]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S') ERROR]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S') WARNING]${NC} $1"
-}
+log_info() { echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S') INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S') SUCCESS]${NC} $1"; }
+log_error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S') ERROR]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S') WARNING]${NC} $1"; }
 
 show_help() {
-    head -38 "$0" | tail -35
+    head -28 "$0" | tail -21
 }
 
 # フェーズ関数
@@ -163,12 +152,14 @@ run_evaluation() {
         log_warning "生成音声ディレクトリが空です: $OUTPUT_DIR/generated"
         log_warning "評価メトリクスの計算をスキップします"
     else
-        log_info "実行: docker exec -it $MODEL_CONTAINER python -m scripts.evaluate_chords dir ..."
+        log_info "実行: docker exec -it $MODEL_CONTAINER python -m scripts.evaluate ..."
 
-        docker exec -it "$MODEL_CONTAINER" python -m scripts.evaluate_chords dir \
+        docker exec -it "$MODEL_CONTAINER" python -m scripts.evaluate \
             "$OUTPUT_DIR/predicted" \
             "$OUTPUT_DIR/generated" \
-            4.0 \
+            "$OUTPUT_DIR/generated" \
+            "data/mixtures" \
+            --chord-frame-rate "$CHORD_FRAME_RATE" \
             --output "$OUTPUT_DIR/evaluation_results.json"
 
         if [ $? -eq 0 ]; then
@@ -200,12 +191,16 @@ while [[ $# -gt 0 ]]; do
             NUM_BATCHES="$2"
             shift 2
             ;;
-        --output-dir)
-            OUTPUT_DIR="$2"
+        --output-dir-parent)
+            OUTPUT_DIR_PARENT="$2"
             shift 2
             ;;
         --chord-dict)
             CHORD_DICT="$2"
+            shift 2
+            ;;
+        --chord-frame-rate)
+            CHORD_FRAME_RATE="$2"
             shift 2
             ;;
         --cleanup)
@@ -251,6 +246,7 @@ echo "サンプル数: $NUM_SAMPLES"
 echo "バッチ数: $NUM_BATCHES"
 echo "出力ディレクトリ: $OUTPUT_DIR"
 echo "和音辞書: $CHORD_DICT"
+echo "和音フレームレート: $CHORD_FRAME_RATE"
 echo "音声生成コンテナ: $MODEL_CONTAINER"
 echo "和音推定コンテナ: $ACR_CONTAINER"
 echo ""

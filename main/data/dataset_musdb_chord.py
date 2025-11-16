@@ -55,7 +55,7 @@ def _fn_extract_stems_and_pad(sample):
 
 
 def _fn_add_chord_annotations(
-    sample, sample_key, chord_frame_rate=24.0, sample_rate=44100, lab_dir=None
+    sample, sample_key, chord_frame_rate, sample_rate=44100, lab_dir=None
 ):
     """和音アノテーションを追加する関数"""
     stems, sr = sample
@@ -160,8 +160,8 @@ def create_musdb_dataset_with_chords(
     sample_rate: int,
     lab_dir: str,
     chunk_dur: float,
+    chord_frame_rate: float,
     shardshuffle: bool = False,
-    chord_frame_rate: float = 24.0,
 ):
     """
     和音アノテーション付きMUSDBデータセットを作成

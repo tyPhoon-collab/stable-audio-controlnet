@@ -70,14 +70,14 @@ class ChordAnnotation:
     def chord_timeline_text(
         self,
         chord_tensor: torch.Tensor,
-        frame_rate: float = 4.0,
+        frame_rate: float,
     ) -> str:
         """
         和音テンソル (T_frames, 3) を可読なタイムライン文字列に整形。
 
         引数:
             chord_tensor: (T, 3) [root, quality, inversion]
-            frame_rate: フレームレート（デフォルト: 4.0 Hz）
+            frame_rate: フレームレート
 
         返り値:
             譜面風のタイムライン文字列
@@ -112,7 +112,7 @@ class ChordAnnotation:
     def chord_tensor_to_lab_format(
         self,
         chord_tensor: torch.Tensor,
-        frame_rate: float = 4.0,
+        frame_rate: float,
     ) -> str:
         """
         和音テンソルを完全な.lab形式（TSV形式）に変換
@@ -165,7 +165,7 @@ class ChordAnnotation:
         self,
         annotations: List[Tuple[float, float, str]],
         audio_length: int,
-        frame_rate: float = 100.0,
+        frame_rate: float,
     ) -> torch.Tensor:
         """
         和音アノテーションから時系列テンソルを作成

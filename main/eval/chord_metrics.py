@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,31 @@ CHORD_INVERSION_BINS = MAX_CHORD_INVERSION + 2  # 0-6 + unknown slot
 CHORD_ONEHOT_DIM = CHORD_ROOT_BINS + CHORD_QUALITY_BINS + CHORD_INVERSION_BINS
 
 LabAnnotation = Tuple[float, float, str]
+
+
+class ChordMetrics(TypedDict):
+    accuracy: float
+    root_accuracy: float
+    matches: int
+    root_matches: int
+    frames: int
+    skipped_frames: int
+    frame_rate: float
+    duration: float
+    predicted_lab: str
+    reference_lab: str
+
+
+class DirectoryMetrics(TypedDict):
+    overall_accuracy: float
+    overall_root_accuracy: float
+    matches: int
+    root_matches: int
+    frames: int
+    skipped_frames: int
+    frame_rate: float
+    files: Dict[str, ChordMetrics]
+    missing_predictions: List[str]
 
 
 def load_lab_annotations(path: Path | str) -> List[LabAnnotation]:
@@ -313,7 +338,7 @@ def evaluate_pair(
     reference_lab: Path | str,
     frame_rate: float,
     ignore_label: Optional[str] = None,
-) -> Dict[str, float | int | str]:
+) -> ChordMetrics:
     """Evaluate a pair of lab files and return metrics."""
     pred_annotations = load_lab_annotations(predicted_lab)
     ref_annotations = load_lab_annotations(reference_lab)
@@ -324,18 +349,18 @@ def evaluate_pair(
     pred_frames = lab_to_frame_labels(pred_annotations, frame_rate, duration)
     ref_frames = lab_to_frame_labels(ref_annotations, frame_rate, duration)
     if not pred_frames or not ref_frames:
-        return {
-            "accuracy": 0.0,
-            "root_accuracy": 0.0,
-            "matches": 0,
-            "root_matches": 0,
-            "frames": 0,
-            "skipped_frames": 0,
-            "frame_rate": frame_rate,
-            "duration": duration,
-            "predicted_lab": str(predicted_lab),
-            "reference_lab": str(reference_lab),
-        }
+        return ChordMetrics(
+            accuracy=0.0,
+            root_accuracy=0.0,
+            matches=0,
+            root_matches=0,
+            frames=0,
+            skipped_frames=0,
+            frame_rate=frame_rate,
+            duration=duration,
+            predicted_lab=str(predicted_lab),
+            reference_lab=str(reference_lab),
+        )
     length = min(len(pred_frames), len(ref_frames))
     matches, total, skipped = frame_accuracy(
         pred_frames[:length],
@@ -349,18 +374,18 @@ def evaluate_pair(
     )
     accuracy = matches / total if total > 0 else 0.0
     root_accuracy = root_matches / root_total if root_total > 0 else 0.0
-    return {
-        "accuracy": accuracy,
-        "root_accuracy": root_accuracy,
-        "matches": matches,
-        "root_matches": root_matches,
-        "frames": total,
-        "skipped_frames": skipped,
-        "frame_rate": frame_rate,
-        "duration": duration,
-        "predicted_lab": str(predicted_lab),
-        "reference_lab": str(reference_lab),
-    }
+    return ChordMetrics(
+        accuracy=accuracy,
+        root_accuracy=root_accuracy,
+        matches=matches,
+        root_matches=root_matches,
+        frames=total,
+        skipped_frames=skipped,
+        frame_rate=frame_rate,
+        duration=duration,
+        predicted_lab=str(predicted_lab),
+        reference_lab=str(reference_lab),
+    )
 
 
 def evaluate_directory(
@@ -368,7 +393,7 @@ def evaluate_directory(
     reference_dir: Path | str,
     frame_rate: float,
     ignore_label: Optional[str] = None,
-) -> Dict[str, object]:
+) -> DirectoryMetrics:
     """Evaluate matching lab files in two directories."""
     pred_path = Path(predicted_dir)
     ref_path = Path(reference_dir)
@@ -376,7 +401,7 @@ def evaluate_directory(
         raise FileNotFoundError(f"Reference directory not found: {ref_path}")
     if not pred_path.exists():
         raise FileNotFoundError(f"Prediction directory not found: {pred_path}")
-    per_file: Dict[str, Dict[str, float | int | str]] = {}
+    per_file: Dict[str, ChordMetrics] = {}
     total_matches = 0
     total_root_matches = 0
     total_frames = 0
@@ -387,54 +412,29 @@ def evaluate_directory(
         if not predicted_lab.exists():
             missing_predictions.append(reference_lab.name)
             continue
-        metrics = evaluate_pair(predicted_lab, reference_lab, frame_rate, ignore_label)
-        per_file[reference_lab.name] = metrics
-        total_matches += int(metrics["matches"])
-        total_root_matches += int(metrics["root_matches"])
-        total_frames += int(metrics["frames"])
-        total_skipped += int(metrics["skipped_frames"])
+        file_metrics = evaluate_pair(
+            predicted_lab,
+            reference_lab,
+            frame_rate,
+            ignore_label,
+        )
+        per_file[reference_lab.name] = file_metrics
+        total_matches += file_metrics["matches"]
+        total_root_matches += file_metrics["root_matches"]
+        total_frames += file_metrics["frames"]
+        total_skipped += file_metrics["skipped_frames"]
     overall_accuracy = total_matches / total_frames if total_frames > 0 else 0.0
     overall_root_accuracy = (
         total_root_matches / total_frames if total_frames > 0 else 0.0
     )
-    return {
-        "overall_accuracy": overall_accuracy,
-        "overall_root_accuracy": overall_root_accuracy,
-        "matches": total_matches,
-        "root_matches": total_root_matches,
-        "frames": total_frames,
-        "skipped_frames": total_skipped,
-        "frame_rate": frame_rate,
-        "files": per_file,
-        "missing_predictions": missing_predictions,
-    }
-
-
-__all__ = [
-    "CHROMATIC_SCALE",
-    "QUALITY_NAMES",
-    "NUM_CHORD_ROOTS",
-    "CHORD_ROOT_BINS",
-    "NUM_CHORD_QUALITIES",
-    "CHORD_QUALITY_BINS",
-    "MAX_CHORD_INVERSION",
-    "CHORD_INVERSION_BINS",
-    "CHORD_ONEHOT_DIM",
-    "LabAnnotation",
-    "load_lab_annotations",
-    "annotations_duration",
-    "lab_to_frame_labels",
-    "frame_accuracy",
-    "frame_root_accuracy",
-    "parse_chord_label",
-    "normalize_root",
-    "normalize_quality",
-    "root_to_number",
-    "number_to_root",
-    "quality_to_number",
-    "number_to_quality",
-    "best_overlap_match",
-    "chord_match_flags_by_overlap",
-    "evaluate_pair",
-    "evaluate_directory",
-]
+    return DirectoryMetrics(
+        overall_accuracy=overall_accuracy,
+        overall_root_accuracy=overall_root_accuracy,
+        matches=total_matches,
+        root_matches=total_root_matches,
+        frames=total_frames,
+        skipped_frames=total_skipped,
+        frame_rate=frame_rate,
+        files=per_file,
+        missing_predictions=missing_predictions,
+    )

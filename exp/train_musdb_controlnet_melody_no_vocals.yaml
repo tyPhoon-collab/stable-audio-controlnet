@@ -8,7 +8,7 @@ log_every_n_steps: 100
 
 model:
   _target_: main.module_controlnet_melody.Model
-  lr: 1e-5
+  lr: 5e-5
   lr_beta1: 0.95
   lr_beta2: 0.999
   lr_eps: 1e-6
@@ -58,11 +58,13 @@ datamodule:
   collate_fn:
     # _target_: main.data.dataset_musdb_melody.collate_fn_melody_mix
     # _partial_: True
-    _target_: main.data.dataset_musdb_melody_cached.collate_fn_genre_melody
+    # _target_: main.data.dataset_musdb_melody_cached.collate_fn_genre_melody
+    # _partial_: True
+    # csv_path: "/app/data/tracklist.csv"
+    _target_: main.data.dataset_musdb_melody_cached.collate_fn_description_melody
     _partial_: True
-    csv_path: "/app/data/tracklist.csv"
-    drop_vocals: True # 楽器のメロディーを生成する場合
-    # drop_vocals: False  # ボーカルのメロディーを生成する場合（歌詞は連続しないので、要検討）
+    csv_path: "/app/data/description.csv"
+    drop_vocals: True
   drop_last: True
   num_workers: 4
   pin_memory: True
@@ -111,7 +113,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: -1
+  max_epochs: 100
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null
