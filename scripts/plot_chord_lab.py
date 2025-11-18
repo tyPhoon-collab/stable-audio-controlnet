@@ -47,7 +47,7 @@ import plotly.graph_objects as go
 import seaborn as sns
 from plotly.subplots import make_subplots
 
-from main.eval.chord_metrics import CHROMATIC_SCALE, parse_chord_label, root_to_number
+from main.data.annotation import CHROMATIC_SCALE, parse_chord_label, root_to_number
 
 # ログ設定
 logging.basicConfig(
@@ -63,25 +63,35 @@ CIRCLE_OF_FIFTHS = ["C", "G", "D", "A", "E", "B", "F#", "C#", "Ab", "Eb", "Bb", 
 # コードクオリティのベース色（HSLの色相値 0-360度）
 QUALITY_HUE_MAP = {
     "maj": 120,  # 緑系: メジャー
-    "min": 210,  # 青系: マイナー
-    "7": 30,  # オレンジ系: ドミナント7th
+    "maj6": 110,  # 緑寄り: メジャー6th
     "maj7": 280,  # 紫系: メジャー7th
+    "min": 210,  # 青系: マイナー
+    "min6": 215,  # 青緑: マイナー6th
     "min7": 180,  # シアン系: マイナー7th
+    "minmaj7": 200,  # 青紫: マイナー・メジャー7th
+    "7": 30,  # オレンジ系: ドミナント7th
     "dim": 0,  # 赤系: ディミニッシュ
+    "dim7": 350,  # 赤紫: ディミニッシュ7th
+    "hdim7": 10,  # 赤橙: ハーフディミニッシュ
     "aug": 15,  # 深いオレンジ系: オーギュメント
-    "sus4": 25,  # 茶系: サス4
     "sus2": 200,  # 青灰系: サス2
+    "sus4": 25,  # 茶系: サス4
     "N": 0,  # グレー: 無音（特別扱い）
 }
 
 # 従来の色分け（フォールバック用）
 CHORD_COLORS = {
     "maj": "#4CAF50",  # 緑: メジャー
-    "min": "#2196F3",  # 青: マイナー
-    "7": "#FF9800",  # オレンジ: ドミナント7th
+    "maj6": "#81C784",  # 明るい緑: メジャー6th
     "maj7": "#9C27B0",  # 紫: メジャー7th
+    "min": "#2196F3",  # 青: マイナー
+    "min6": "#64B5F6",  # 明るい青: マイナー6th
     "min7": "#00BCD4",  # シアン: マイナー7th
+    "minmaj7": "#4DB6AC",  # 青緑: マイナー・メジャー7th
+    "7": "#FF9800",  # オレンジ: ドミナント7th
     "dim": "#F44336",  # 赤: ディミニッシュ
+    "dim7": "#E91E63",  # ピンク: ディミニッシュ7th
+    "hdim7": "#FF7043",  # サーモン: ハーフディミニッシュ
     "aug": "#FF5722",  # 深いオレンジ: オーギュメント
     "sus4": "#795548",  # 茶: サス4
     "sus2": "#607D8B",  # 青灰: サス2

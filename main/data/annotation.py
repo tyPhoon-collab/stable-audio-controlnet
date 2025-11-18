@@ -1,20 +1,240 @@
+from __future__ import annotations
+
+from pathlib import Path
 from typing import List, Tuple
 
 import torch
 
-from main.eval.chord_metrics import (
-    CHORD_QUALITY_BINS,
-    CHORD_ROOT_BINS,
-    MAX_CHORD_INVERSION,
-    NUM_CHORD_QUALITIES,
-    NUM_CHORD_ROOTS,
-    load_lab_annotations,
-    number_to_quality,
-    number_to_root,
-    parse_chord_label,
-    quality_to_number,
-    root_to_number,
-)
+CHROMATIC_SCALE = [
+    "C",
+    "C#",
+    "D",
+    "D#",
+    "E",
+    "F",
+    "F#",
+    "G",
+    "G#",
+    "A",
+    "A#",
+    "B",
+]
+
+_PREFERRED_ROOT_NAMES = {
+    10: "Bb",
+}
+
+QUALITY_NAMES = [
+    "maj",
+    "min",
+    "dim",
+    "aug",
+    "min6",
+    "maj6",
+    "min7",
+    "minmaj7",
+    "maj7",
+    "7",
+    "dim7",
+    "hdim7",
+    "sus2",
+    "sus4",
+]
+
+QUALITY_CHROMA_INTERVALS = {
+    "maj": (0, 4, 7),
+    "min": (0, 3, 7),
+    "dim": (0, 3, 6),
+    "aug": (0, 4, 8),
+    "min6": (0, 3, 7, 9),
+    "maj6": (0, 4, 7, 9),
+    "min7": (0, 3, 7, 10),
+    "minmaj7": (0, 3, 7, 11),
+    "maj7": (0, 4, 7, 11),
+    "7": (0, 4, 7, 10),
+    "dim7": (0, 3, 6, 9),
+    "hdim7": (0, 3, 6, 10),
+    "sus2": (0, 2, 7),
+    "sus4": (0, 5, 7),
+    "N": (),
+}
+
+_FLAT_TO_SHARP = {
+    "Db": "C#",
+    "Eb": "D#",
+    "Gb": "F#",
+    "Ab": "G#",
+    "Bb": "A#",
+}
+
+_QUALITY_ALIAS_MAP = {
+    "major": "maj",
+    "maj": "maj",
+    "minor": "min",
+    "m": "min",
+    "dom": "7",
+    "dom7": "7",
+    "dominant": "7",
+    "diminished": "dim",
+    "dimin": "dim",
+    "dim": "dim",
+    "diminished7": "dim7",
+    "dim7": "dim7",
+    "hdim": "hdim7",
+    "hdim7": "hdim7",
+    "half-diminished": "hdim7",
+    "half-diminished7": "hdim7",
+    "half diminished": "hdim7",
+    "m7b5": "hdim7",
+    "augmented": "aug",
+    "minor6": "min6",
+    "m6": "min6",
+    "major6": "maj6",
+    "maj6": "maj6",
+    "minor7": "min7",
+    "m7": "min7",
+    "maj7": "maj7",
+    "major7": "maj7",
+    "minmaj7": "minmaj7",
+    "mmaj7": "minmaj7",
+    "sus": "sus4",
+    "suspended": "sus4",
+    "sus4": "sus4",
+    "sus2": "sus2",
+    "n": "N",
+}
+
+NUM_CHORD_ROOTS = len(CHROMATIC_SCALE)
+CHORD_ROOT_BINS = NUM_CHORD_ROOTS + 1  # +1 for 'N'
+NUM_CHORD_QUALITIES = len(QUALITY_NAMES)
+CHORD_QUALITY_BINS = NUM_CHORD_QUALITIES + 1  # +1 for 'N'
+MAX_CHORD_INVERSION = 6
+CHORD_INVERSION_BINS = MAX_CHORD_INVERSION + 2  # 0-6 + unknown slot
+CHORD_ONEHOT_DIM = CHORD_ROOT_BINS + CHORD_QUALITY_BINS + CHORD_INVERSION_BINS
+
+LabAnnotation = Tuple[float, float, str]
+
+
+def load_lab_annotations(path: Path | str) -> List[LabAnnotation]:
+    """Labファイルから和音アノテーションを読み込む"""
+    lab_path = Path(path)
+    annotations: List[LabAnnotation] = []
+    if not lab_path.exists():
+        raise FileNotFoundError(f"Lab file not found: {lab_path}")
+    with lab_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                start = float(parts[0])
+                end = float(parts[1])
+            except ValueError:
+                continue
+            label = " ".join(parts[2:]).strip()
+            if not label:
+                label = "N"
+            annotations.append((start, end, label))
+    return annotations
+
+
+def normalize_root(root: str) -> str:
+    """フラット表記などを正規化して基音表記を統一"""
+    if not root:
+        return "N"
+    stripped = root.strip()
+    if not stripped:
+        return "N"
+    if stripped.upper() == "N":
+        return "N"
+    normalized = stripped[0].upper() + stripped[1:]
+    for flat, sharp in _FLAT_TO_SHARP.items():
+        normalized = normalized.replace(flat, sharp)
+        normalized = normalized.replace(flat.lower(), sharp)
+    return normalized
+
+
+def normalize_quality(quality: str) -> str:
+    """和音品質の表記ゆれを正規化"""
+    if not quality:
+        return "N"
+    stripped = quality.strip()
+    if not stripped:
+        return "N"
+    lowered = stripped.lower()
+    if lowered in _QUALITY_ALIAS_MAP:
+        return _QUALITY_ALIAS_MAP[lowered]
+    for canonical in QUALITY_NAMES:
+        if lowered == canonical.lower():
+            return canonical
+    if lowered == "n":
+        return "N"
+    return stripped
+
+
+def parse_chord_label(chord_label: str) -> Tuple[str, str]:
+    """'C:maj7' を (root, quality) に分解"""
+    if not chord_label or chord_label == "N":
+        return "N", "N"
+    if ":" in chord_label:
+        root, quality = chord_label.split(":", 1)
+    else:
+        root = chord_label
+        quality = "maj"
+    root = normalize_root(root)
+    quality = normalize_quality(quality)
+    return root, quality
+
+
+def root_to_number(root: str) -> int:
+    """基音を0-11の数値に変換"""
+    if not root or root == "N":
+        return -1
+    normalized = normalize_root(root)
+    try:
+        return CHROMATIC_SCALE.index(normalized)
+    except ValueError:
+        return 0
+
+
+def number_to_root(index: int) -> str:
+    """インデックスを基音ラベルへ変換"""
+    if index < 0:
+        return "N"
+    normalized = index % NUM_CHORD_ROOTS
+    if normalized in _PREFERRED_ROOT_NAMES:
+        return _PREFERRED_ROOT_NAMES[normalized]
+    return CHROMATIC_SCALE[normalized]
+
+
+def quality_to_number(quality: str) -> int:
+    """和音品質をインデックスに変換"""
+    normalized = normalize_quality(quality)
+    if normalized == "N":
+        return -1
+    try:
+        return QUALITY_NAMES.index(normalized)
+    except ValueError:
+        return 0
+
+
+def number_to_quality(index: int) -> str:
+    """品質インデックスをラベルへ変換"""
+    if index < 0:
+        return "N"
+    if index < NUM_CHORD_QUALITIES:
+        return QUALITY_NAMES[index]
+    return QUALITY_NAMES[0]
+
+
+def quality_chroma_offsets(quality: str) -> List[int]:
+    """和音品質から相対クロマ（半音単位）のリストを取得"""
+    normalized = normalize_quality(quality)
+    return list(QUALITY_CHROMA_INTERVALS.get(normalized, ()))
+
 
 ROOT_N_INDEX = NUM_CHORD_ROOTS
 QUALITY_N_INDEX = NUM_CHORD_QUALITIES

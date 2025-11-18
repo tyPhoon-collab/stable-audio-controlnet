@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from main.data.annotation import ChordAnnotation
+from main.data.annotation import ChordAnnotation, quality_chroma_offsets
 
 
 @pytest.fixture(scope="module")
@@ -14,12 +14,12 @@ def chord_annotation():
     [
         ("C:maj", (0, 0, 0)),
         ("C#:min", (1, 1, 0)),
-        ("D:maj7", (2, 2, 0)),
-        ("Bb:7", (10, 4, 0)),
+        ("D:maj7", (2, 8, 0)),
+        ("Bb:7", (10, 9, 0)),
         ("F:maj/3", (5, 0, 3)),
         ("N", (-1, -1, 0)),
-        ("G:dim", (7, 5, 0)),
-        ("A:sus4", (9, 7, 0)),
+        ("G:dim", (7, 2, 0)),
+        ("A:sus4", (9, 13, 0)),
     ],
 )
 def test_parse_chord_symbol(chord_annotation, symbol, expected):
@@ -31,12 +31,12 @@ def test_parse_chord_symbol(chord_annotation, symbol, expected):
     [
         ((0, 0, 0), "C:maj"),
         ((1, 1, 0), "C#:min"),
-        ((2, 2, 0), "D:maj7"),
-        ((10, 4, 0), "Bb:7"),
+        ((2, 8, 0), "D:maj7"),
+        ((10, 9, 0), "Bb:7"),
         ((5, 0, 3), "F:maj/3"),
         ((-1, -1, 0), "N"),
-        ((7, 5, 0), "G:dim"),
-        ((9, 7, 0), "A:sus4"),
+        ((7, 2, 0), "G:dim"),
+        ((9, 13, 0), "A:sus4"),
     ],
 )
 def test_idx_to_chord_symbol(chord_annotation, encoded, expected):
@@ -108,7 +108,9 @@ def test_create_chord_tensor(chord_annotation):
 
 def test_load_and_save_lab_file_roundtrip(tmp_path, chord_annotation):
     lab_file = tmp_path / "test.lab"
-    lab_file.write_text("0.000\t0.500\tC:maj\n0.500\t1.000\tG:maj\n1.000\t1.500\tAm:min\n")
+    lab_file.write_text(
+        "0.000\t0.500\tC:maj\n0.500\t1.000\tG:maj\n1.000\t1.500\tAm:min\n"
+    )
 
     annotations = chord_annotation.load_lab_file(str(lab_file))
     assert annotations == [
@@ -122,7 +124,9 @@ def test_load_and_save_lab_file_roundtrip(tmp_path, chord_annotation):
         audio_length=44100 * 2,
         frame_rate=2.0,
     )
-    generated = chord_annotation.chord_tensor_to_lab_format(chord_tensor, frame_rate=2.0)
+    generated = chord_annotation.chord_tensor_to_lab_format(
+        chord_tensor, frame_rate=2.0
+    )
     saved = tmp_path / "resaved.lab"
     saved.write_text(generated)
 
@@ -136,7 +140,9 @@ def test_edge_cases(chord_annotation):
     assert chord_annotation.chord_tensor_to_lab_format(empty, frame_rate=4.0) == ""
 
     wrong_shape = torch.tensor([[1, 2], [3, 4]], dtype=torch.long)
-    assert chord_annotation.chord_tensor_to_lab_format(wrong_shape, frame_rate=4.0) == ""
+    assert (
+        chord_annotation.chord_tensor_to_lab_format(wrong_shape, frame_rate=4.0) == ""
+    )
 
     silent = torch.tensor([[-1, -1, 0], [-1, -1, 0]], dtype=torch.long)
     lab = chord_annotation.chord_tensor_to_lab_format(silent, frame_rate=4.0)
@@ -147,3 +153,10 @@ def test_edge_cases(chord_annotation):
     first_line = lab_high.splitlines()[0]
     start, end, _ = first_line.split("\t")
     assert pytest.approx(float(end)) == 0.02
+
+
+def test_quality_chroma_offsets():
+    assert quality_chroma_offsets("maj") == [0, 4, 7]
+    assert quality_chroma_offsets("m7") == [0, 3, 7, 10]
+    assert quality_chroma_offsets("sus4") == [0, 5, 7]
+    assert quality_chroma_offsets("N") == []

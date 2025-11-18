@@ -15,11 +15,12 @@ model:
   lr_eps: 1e-6
   lr_weight_decay: 1e-3
   cfg_dropout_prob: 0.1
-  depth_factor: 0.6
+  depth_factor: 0.5
   chord_frame_rate: ${chord_frame_rate}
   chord_conditioner:
     # _target_: main.chord_conditioner.EmbeddingChordConditioner
-    _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
+    # _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
+    _target_: main.chord_conditioner.ChromaChordConditioner
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule

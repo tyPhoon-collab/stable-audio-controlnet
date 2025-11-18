@@ -24,13 +24,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from main.eval.chord_metrics import (
+from main.data.annotation import (
     CHROMATIC_SCALE,
     LabAnnotation,
-    chord_match_flags_by_overlap,
     parse_chord_label,
     root_to_number,
 )
+from main.eval.chord_metrics import chord_match_flags_by_overlap
 
 # ログ設定
 logging.basicConfig(
@@ -43,25 +43,35 @@ logger = logging.getLogger(__name__)
 # 和音品質のHueマッピング（0-360度）
 QUALITY_HUE_MAP = {
     "maj": 120,
-    "min": 210,
-    "7": 30,
+    "maj6": 110,
     "maj7": 280,
+    "min": 210,
+    "min6": 215,
     "min7": 180,
+    "minmaj7": 200,
+    "7": 30,
     "dim": 0,
+    "dim7": 350,
+    "hdim7": 10,
     "aug": 15,
-    "sus4": 25,
     "sus2": 200,
+    "sus4": 25,
     "N": 0,
 }
 
 # 和音品質の飽和度と明度
 QUALITY_SATURATION_LIGHTNESS = {
     "maj": (0.4, 0.7),
-    "min": (0.45, 0.65),
-    "7": (0.5, 0.68),
+    "maj6": (0.38, 0.72),
     "maj7": (0.5, 0.68),
+    "min": (0.45, 0.65),
+    "min6": (0.43, 0.63),
     "min7": (0.5, 0.68),
+    "minmaj7": (0.48, 0.66),
+    "7": (0.5, 0.68),
     "dim": (0.55, 0.6),
+    "dim7": (0.57, 0.58),
+    "hdim7": (0.56, 0.59),
     "aug": (0.55, 0.6),
     "sus4": (0.35, 0.72),
     "sus2": (0.35, 0.72),

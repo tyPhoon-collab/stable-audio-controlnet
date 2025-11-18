@@ -1,70 +1,9 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, TypedDict
 
-logger = logging.getLogger(__name__)
-
-
-CHROMATIC_SCALE = [
-    "C",
-    "C#",
-    "D",
-    "D#",
-    "E",
-    "F",
-    "F#",
-    "G",
-    "G#",
-    "A",
-    "A#",
-    "B",
-]
-
-QUALITY_NAMES = [
-    "maj",
-    "min",
-    "maj7",
-    "min7",
-    "7",
-    "dim",
-    "aug",
-    "sus4",
-    "sus2",
-]
-
-_FLAT_TO_SHARP = {
-    "Db": "C#",
-    "Eb": "D#",
-    "Gb": "F#",
-    "Ab": "G#",
-    "Bb": "A#",
-}
-
-_QUALITY_ALIAS_MAP = {
-    "major": "maj",
-    "minor": "min",
-    "dom": "7",
-    "dom7": "7",
-    "dominant": "7",
-    "diminished": "dim",
-    "dimin": "dim",
-    "augmented": "aug",
-    "sus": "sus4",
-    "suspended": "sus4",
-    "n": "N",
-}
-
-NUM_CHORD_ROOTS = len(CHROMATIC_SCALE)
-CHORD_ROOT_BINS = NUM_CHORD_ROOTS + 1  # +1 for 'N'
-NUM_CHORD_QUALITIES = len(QUALITY_NAMES)
-CHORD_QUALITY_BINS = NUM_CHORD_QUALITIES + 1  # +1 for 'N'
-MAX_CHORD_INVERSION = 6
-CHORD_INVERSION_BINS = MAX_CHORD_INVERSION + 2  # 0-6 + unknown slot
-CHORD_ONEHOT_DIM = CHORD_ROOT_BINS + CHORD_QUALITY_BINS + CHORD_INVERSION_BINS
-
-LabAnnotation = Tuple[float, float, str]
+from main.data.annotation import LabAnnotation, load_lab_annotations, parse_chord_label
 
 
 class ChordMetrics(TypedDict):
@@ -90,32 +29,6 @@ class DirectoryMetrics(TypedDict):
     frame_rate: float
     files: Dict[str, ChordMetrics]
     missing_predictions: List[str]
-
-
-def load_lab_annotations(path: Path | str) -> List[LabAnnotation]:
-    """Load chord annotations from a lab file."""
-    lab_path = Path(path)
-    annotations: List[LabAnnotation] = []
-    if not lab_path.exists():
-        raise FileNotFoundError(f"Lab file not found: {lab_path}")
-    with lab_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            try:
-                start = float(parts[0])
-                end = float(parts[1])
-            except ValueError:
-                continue
-            label = " ".join(parts[2:]).strip()
-            if not label:
-                label = "N"
-            annotations.append((start, end, label))
-    return annotations
 
 
 def annotations_duration(annotations: Sequence[LabAnnotation]) -> float:
@@ -193,95 +106,6 @@ def frame_root_accuracy(
         if pred_root == ref_root:
             matches += 1
     return matches, total, skipped
-
-
-def normalize_root(root: str) -> str:
-    """Normalize chord roots (e.g., flats to sharps, capitalization)."""
-    if not root:
-        return "N"
-    stripped = root.strip()
-    if not stripped:
-        return "N"
-    if stripped.upper() == "N":
-        return "N"
-    # Capitalize first letter, keep accidental case-sensitive
-    normalized = stripped[0].upper() + stripped[1:]
-    for flat, sharp in _FLAT_TO_SHARP.items():
-        normalized = normalized.replace(flat, sharp)
-        normalized = normalized.replace(flat.lower(), sharp)
-    return normalized
-
-
-def normalize_quality(quality: str) -> str:
-    """Normalize chord quality strings using canonical aliases."""
-    if not quality:
-        return "N"
-    stripped = quality.strip()
-    if not stripped:
-        return "N"
-    lowered = stripped.lower()
-    if lowered in _QUALITY_ALIAS_MAP:
-        return _QUALITY_ALIAS_MAP[lowered]
-    for canonical in QUALITY_NAMES:
-        if lowered == canonical.lower():
-            return canonical
-    if lowered == "n":
-        return "N"
-    return stripped
-
-
-def parse_chord_label(chord_label: str) -> Tuple[str, str]:
-    """Split a chord label into (root, quality) with normalization."""
-    if not chord_label or chord_label == "N":
-        return "N", "N"
-    if ":" in chord_label:
-        root, quality = chord_label.split(":", 1)
-    else:
-        root = chord_label
-        quality = "maj"
-    root = normalize_root(root)
-    quality = normalize_quality(quality)
-    return root, quality
-
-
-def root_to_number(root: str) -> int:
-    """Convert a chord root to chromatic index (C=0, ..., B=11)."""
-    if not root or root == "N":
-        return -1
-    normalized = normalize_root(root)
-    try:
-        return CHROMATIC_SCALE.index(normalized)
-    except ValueError:
-        logger.warning("Unknown root: %s, treating as C", root)
-        return 0
-
-
-def number_to_root(index: int) -> str:
-    """Convert a chromatic index to its root label."""
-    if index < 0:
-        return "N"
-    return CHROMATIC_SCALE[index % NUM_CHORD_ROOTS]
-
-
-def quality_to_number(quality: str) -> int:
-    """Convert a chord quality string to an index."""
-    normalized = normalize_quality(quality)
-    if normalized == "N":
-        return -1
-    try:
-        return QUALITY_NAMES.index(normalized)
-    except ValueError:
-        logger.warning("Unknown quality: %s, treating as 'maj'", quality)
-        return 0
-
-
-def number_to_quality(index: int) -> str:
-    """Convert a chord quality index to its label."""
-    if index < 0:
-        return "N"
-    if index < NUM_CHORD_QUALITIES:
-        return QUALITY_NAMES[index]
-    return QUALITY_NAMES[0]
 
 
 def best_overlap_match(
