@@ -1,26 +1,12 @@
-import json
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
-from enum import Enum, auto
-import torch
-from huggingface_hub import hf_hub_download
-from stable_audio_tools.models.diffusion import DiTWrapper
-from stable_audio_tools.models.dit import DiffusionTransformer
-from stable_audio_tools.models.utils import load_ckpt_state_dict
-from torch import nn
-from torch.nn import functional as F
-
 import typing as tp
 
 import torch
-
 from einops import rearrange
+from stable_audio_tools.models.blocks import FourierFeatures
+from stable_audio_tools.models.transformer import ContinuousTransformer
 from torch import nn
 from torch.nn import functional as F
 from x_transformers import ContinuousTransformerWrapper, Encoder
-
-from stable_audio_tools.models.blocks import FourierFeatures
-from stable_audio_tools.models.transformer import ContinuousTransformer
 
 # from main.controlnet.conditioning import ControlNetConditioningEmbedding
 
@@ -148,12 +134,14 @@ class ControlNetDiffusionTransformer(nn.Module):
 
         # controlnet stuff
 
-        self.conv_in = nn.Conv1d(dim_in, dim_in, 1, bias=False)
+        self.conv_in = nn.Conv1d(dim_in, dim_in, 1)
         nn.init.zeros_(self.conv_in.weight)
+        nn.init.zeros_(self.conv_in.bias)
 
-        self.conv_outs = nn.ModuleList([nn.Conv1d(embed_dim, embed_dim, 1, bias=False) for _ in range(depth)])
+        self.conv_outs = nn.ModuleList([nn.Conv1d(embed_dim, embed_dim, 1) for _ in range(depth)])
         for conv_out in self.conv_outs:
             nn.init.zeros_(conv_out.weight)
+            nn.init.zeros_(conv_out.bias)
 
     def _forward(
             self,
