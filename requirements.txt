@@ -24,6 +24,7 @@ librosa
 matplotlib
 numpy
 frechet_audio_distance
+laion-clap==1.1.7
 
 # For music visualization and analysis
 mir_eval
