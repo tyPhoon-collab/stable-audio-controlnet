@@ -19,7 +19,7 @@
 #   --output-dir-parent DIR    出力ディレクトリの親ディレクトリ (デフォルト: out)
 #   --chord-dict DICT          和音辞書 (デフォルト: small)
 #   --chord-frame-rate RATE    和音フレームレート (デフォルト: 24.0)
-#   --cleanup                  失敗時に出力ディレクトリをクリーンアップ
+#   --clap-model-path PATH     CLAPモデルパス (デフォルト: ckpts/music_audioset_epoch_15_esc_90.14.pt)
 #   --help                     ヘルプを表示
 #
 # 例:
@@ -30,8 +30,6 @@
 #
 ###############################################################################
 
-set -e
-
 MODEL_CONTAINER="stable-audio-controlnet-stable-audio-controlnet-1"
 ACR_CONTAINER="ismir2019-large-vocabulary-chord-recognition-acr-1"
 
@@ -39,14 +37,12 @@ EXP_CONFIG="train_musdb_controlnet_chord"
 NUM_SAMPLES=5
 NUM_BATCHES=1
 OUTPUT_DIR_PARENT="out"
-CHORD_DICT="small"
-CHORD_FRAME_RATE=24.0
+CHORD_DICT="ismir2017"
+CHORD_FRAME_RATE=21.533203125
+CLAP_MODEL_PATH="ckpts/music_audioset_epoch_15_esc_90.14.pt"
 CHECKPOINT=""
-CLEANUP=false
 
-# 出力ディレクトリを日付でネストさせる
-TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-OUTPUT_DIR="${OUTPUT_DIR_PARENT}/${TIMESTAMP}"
+set -e
 
 # カラー定義
 RED='\033[0;31m'
@@ -74,10 +70,6 @@ run_audio_generation() {
     # コンテナの実行確認
     if ! docker ps --filter name="$MODEL_CONTAINER" --filter status=running | grep -q "$MODEL_CONTAINER"; then
         log_error "音声生成コンテナが実行中ではありません: $MODEL_CONTAINER"
-        if [ "$CLEANUP" = true ]; then
-            rm -rf "$OUTPUT_DIR"
-            log_info "出力ディレクトリをクリーンアップしました: $OUTPUT_DIR"
-        fi
         exit 1
     fi
 
@@ -95,10 +87,6 @@ run_audio_generation() {
         log_success "音声生成が完了しました"
     else
         log_error "音声生成に失敗しました"
-        if [ "$CLEANUP" = true ]; then
-            rm -rf "$OUTPUT_DIR"
-            log_info "出力ディレクトリをクリーンアップしました: $OUTPUT_DIR"
-        fi
         exit 1
     fi
 
@@ -114,10 +102,6 @@ run_chord_recognition() {
     # コンテナの実行確認
     if ! docker ps --filter name="$ACR_CONTAINER" --filter status=running | grep -q "$ACR_CONTAINER"; then
         log_error "和音推定コンテナが実行中ではありません: $ACR_CONTAINER"
-        if [ "$CLEANUP" = true ]; then
-            rm -rf "$OUTPUT_DIR"
-            log_info "出力ディレクトリをクリーンアップしました: $OUTPUT_DIR"
-        fi
         exit 1
     fi
 
@@ -160,6 +144,7 @@ run_evaluation() {
             "$OUTPUT_DIR/generated" \
             "data/mixtures" \
             --chord-frame-rate "$CHORD_FRAME_RATE" \
+            --clap-model-path "$CLAP_MODEL_PATH" \
             --output "$OUTPUT_DIR/evaluation_results.json"
 
         if [ $? -eq 0 ]; then
@@ -203,9 +188,9 @@ while [[ $# -gt 0 ]]; do
             CHORD_FRAME_RATE="$2"
             shift 2
             ;;
-        --cleanup)
-            CLEANUP=true
-            shift
+        --clap-model-path)
+            CLAP_MODEL_PATH="$2"
+            shift 2
             ;;
         --help)
             show_help
@@ -231,6 +216,10 @@ if [ ! -f "$CHECKPOINT" ]; then
     exit 1
 fi
 
+# 出力ディレクトリを日付でネストさせる
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+OUTPUT_DIR="${OUTPUT_DIR_PARENT}/${TIMESTAMP}"
+
 # メイン処理開始
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -247,6 +236,7 @@ echo "バッチ数: $NUM_BATCHES"
 echo "出力ディレクトリ: $OUTPUT_DIR"
 echo "和音辞書: $CHORD_DICT"
 echo "和音フレームレート: $CHORD_FRAME_RATE"
+echo "CLAPモデルパス: $CLAP_MODEL_PATH"
 echo "音声生成コンテナ: $MODEL_CONTAINER"
 echo "和音推定コンテナ: $ACR_CONTAINER"
 echo ""

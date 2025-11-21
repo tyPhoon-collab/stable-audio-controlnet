@@ -6,34 +6,25 @@ from pathlib import Path
 from typing import Any
 
 import hydra
-import numpy as np
 import torch
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
-from main.eval_utils import (
+from eval_utils import (
+    GenerationConfig,
+    create_base_metadata,
+    load_model_and_config,
     save_audio_file,
+    save_json_metadata,
     set_global_seed,
     tensor_to_float,
 )
+from main.module_controlnet_chord import Model
 
 # ロガー設定
 logger = logging.getLogger(__name__)
 
 # 定数
 CONDITION_KEY_CHORD = "chord"
-CONDITION_KEY_MELODY = "melody"
-
-
-@dataclass
-class GenerationConfig:
-    """音声生成設定"""
-
-    steps: int
-    cfg_scale: float
-    sigma_min: float
-    sigma_max: float
-    sampler_type: str
-    device: str
 
 
 @dataclass
@@ -67,8 +58,8 @@ def parse_args() -> argparse.Namespace:
         "--exp_config",
         type=str,
         required=True,
-        choices=["train_musdb_controlnet_melody", "train_musdb_controlnet_chord"],
-        help="実験設定ファイル名 (melody or chord)",
+        choices=["train_musdb_controlnet_chord"],
+        help="実験設定ファイル名 (chord)",
     )
     parser.add_argument(
         "--checkpoint",
@@ -136,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
+def _load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
     """モデルと設定の読み込み
 
     Args:
@@ -148,28 +139,18 @@ def load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
     Raises:
         FileNotFoundError: チェックポイントが見つからない場合
     """
-    logger.info("設定ファイルの読み込み...")
 
-    with hydra.initialize(config_path=".", version_base=None):
-        cond_cfg = hydra.compose(
-            config_name="config",
-            overrides=[f"exp={config.exp_config}"],
+    model, cond_cfg = load_model_and_config(
+        exp_config=config.exp_config,
+        checkpoint_path=config.checkpoint_path,
+        device=config.generation.device,
+        overrides=[f"exp={config.exp_config}"],
+    )
+
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"Model must be an instance of main.module_controlnet_chord.Model, but got {type(model)}"
         )
-
-    logger.info("モデルのインスタンス化...")
-    model = hydra.utils.instantiate(cond_cfg["model"])
-
-    logger.info(f"チェックポイント読み込み: {config.checkpoint_path}")
-    checkpoint_path = Path(config.checkpoint_path)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
-    model.load_state_dict(ckpt["state_dict"], strict=False)
-
-    logger.info(f"モデルを{config.generation.device}に移動...")
-    model = model.to(config.generation.device)
-    model.eval()
 
     return model, cond_cfg
 
@@ -181,14 +162,12 @@ def _detect_condition_type(model: Any) -> str:
         model: 読み込まれたモデル
 
     Returns:
-        コンディションタイプ ("chord", "melody", または "unknown")
+        コンディションタイプ ("chord" または "unknown")
     """
     conditioner_keys = set(model.model.conditioner.conditioners.keys())
 
     if CONDITION_KEY_CHORD in conditioner_keys:
         return CONDITION_KEY_CHORD
-    elif CONDITION_KEY_MELODY in conditioner_keys:
-        return CONDITION_KEY_MELODY
     else:
         return "unknown"
 
@@ -251,21 +230,6 @@ def prepare_conditioning(
                     },
                 }
             )
-    elif CONDITION_KEY_MELODY in conditioner_keys:
-        # メロディモデルの場合
-        logger.info("メロディコンディショニングを使用")
-        for i in range(num_samples):
-            conditioning.append(
-                {
-                    "prompt": prompts[i],
-                    "seconds_start": start_seconds[i],
-                    "seconds_total": total_seconds[i],
-                    "melody": {
-                        "data": condition_data[i],
-                        "target_size": target_size,
-                    },
-                }
-            )
     else:
         raise ValueError(f"Unknown conditioner type: {conditioner_keys}")
 
@@ -313,106 +277,12 @@ def generate_audio(
     return output
 
 
-def _create_metadata_lines(
-    prompt: str,
-    start_seconds: float,
-    total_seconds: float,
-    seed: int,
-    condition_type: str,
-    condition_data: torch.Tensor,
-    sample_rate: int,
-    batch_idx: int,
-    sample_idx: int,
-    config: EvalConfig,
-    chord_frame_rate: float,
-) -> list[str]:
-    """メタデータ行を生成
-
-    Args:
-        prompt: プロンプト文字列
-        start_seconds: 開始秒数
-        total_seconds: 合計秒数
-        seed: シード値
-        condition_type: コンディションタイプ
-        condition_data: コンディションテンソル
-        sample_rate: サンプルレート
-        batch_idx: バッチインデックス
-        sample_idx: サンプルインデックス
-        config: 評価設定オブジェクト
-
-    Returns:
-        メタデータ行のリスト
-    """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    metadata_lines = [
-        "=== Stable Audio ControlNet 生成情報 ===",
-        f"生成時刻: {now}",
-        "",
-        "=== プロンプト情報 ===",
-        f"prompt: {prompt}",
-        "",
-        "=== 時間情報 ===",
-        f"start_seconds: {start_seconds}",
-        f"total_seconds: {total_seconds}",
-        f"duration: {total_seconds - start_seconds}",
-        "",
-        "=== 生成パラメータ ===",
-        f"seed: {seed}",
-        f"steps: {config.generation.steps}",
-        f"cfg_scale: {config.generation.cfg_scale}",
-        f"sampler: {config.generation.sampler_type}",
-        f"device: {config.generation.device}",
-        "",
-        "=== 条件情報 ===",
-        f"condition_type: {condition_type}",
-        f"condition_shape: {condition_data.shape}",
-        f"sample_rate: {sample_rate}",
-        "",
-        "=== インデックス情報 ===",
-        f"batch_index: {batch_idx}",
-        f"sample_index: {sample_idx}",
-        f"total_samples: {config.num_samples}",
-        f"total_batches: {config.num_batches}",
-        "",
-        "=== モデル情報 ===",
-        f"exp_config: {config.exp_config}",
-        f"checkpoint: {config.checkpoint_path}",
-        "",
-    ]
-
-    # コンディションタイプに応じた情報を追加
-    if condition_type == CONDITION_KEY_CHORD:
-        try:
-            from main.data.annotation import ChordAnnotation
-
-            chord_annotation = ChordAnnotation(sample_rate=sample_rate)
-            metadata_lines.append("=== コード情報 ===")
-            metadata_lines.append(
-                chord_annotation.chord_timeline_text(
-                    condition_data, frame_rate=chord_frame_rate
-                )
-            )
-        except Exception as e:
-            logger.warning(f"コード情報の保存に失敗: {e}")
-            metadata_lines.append("=== コード情報 ===")
-            metadata_lines.append(f"chord_shape: {condition_data.shape}")
-            metadata_lines.append(f"(詳細取得失敗: {e})")
-    else:
-        metadata_lines.append("=== コンディション情報 ===")
-        metadata_lines.append(f"{condition_type}_shape: {condition_data.shape}")
-
-    return metadata_lines
-
-
 def save_condition_data(
     condition_data: torch.Tensor,
     condition_type: str,
     output_dir: Path,
     file_prefix: str,
     safe_prompt: str,
-    start_seconds: float,
-    total_seconds: float,
     sample_rate: int,
     chord_frame_rate: float,
 ) -> None:
@@ -420,7 +290,7 @@ def save_condition_data(
 
     Args:
         condition_data: コンディションテンソル
-        condition_type: コンディションタイプ ("chord" or "melody")
+        condition_type: コンディションタイプ ("chord")
         output_dir: 出力ディレクトリ
         file_prefix: ファイルプレフィックス
         safe_prompt: 安全なプロンプト文字列（wavファイルと同じ名前に使用）
@@ -444,90 +314,9 @@ def save_condition_data(
             with open(lab_path, "w", encoding="utf-8") as f:
                 f.write(lab_text)
             logger.info(f"コード条件を保存: {lab_path}")
-        else:
-            # メロディなど他の条件はNumpy形式で保存
-            # wavファイルと同じ名前（{file_prefix}_{safe_prompt}）で保存
-            npy_path = output_dir / f"{file_prefix}_{safe_prompt}.npy"
-            np.save(npy_path, condition_data.cpu().numpy())
-            logger.info(f"メロディ条件を保存: {npy_path}")
 
     except Exception as e:
         logger.warning(f"コンディションデータの保存に失敗: {e}")
-
-
-def _create_batch_metadata_lines(
-    prompt: str,
-    start_seconds: float,
-    total_seconds: float,
-    condition_type: str,
-    condition_data: torch.Tensor,
-    sample_rate: int,
-    batch_idx: int,
-    config: EvalConfig,
-    chord_frame_rate: float,
-) -> list[str]:
-    """バッチ音源用メタデータ行を生成
-
-    Args:
-        prompt: プロンプト文字列
-        start_seconds: 開始秒数
-        total_seconds: 合計秒数
-        condition_type: コンディションタイプ
-        condition_data: コンディションテンソル
-        sample_rate: サンプルレート
-        batch_idx: バッチインデックス
-        config: 評価設定オブジェクト
-
-    Returns:
-        メタデータ行のリスト
-    """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    metadata_lines = [
-        "=== 元のバッチ音源情報 ===",
-        f"保存時刻: {now}",
-        "",
-        "=== プロンプト情報 ===",
-        f"prompt: {prompt}",
-        "",
-        "=== 時間情報 ===",
-        f"start_seconds: {start_seconds}",
-        f"total_seconds: {total_seconds}",
-        f"duration: {total_seconds - start_seconds}",
-        "",
-        "=== 音源情報 ===",
-        f"sample_rate: {sample_rate}",
-        f"batch_index: {batch_idx}",
-        f"total_samples: {config.num_samples}",
-        "",
-        "=== 条件情報 ===",
-        f"condition_type: {condition_type}",
-        f"condition_shape: {condition_data.shape}",
-        "",
-    ]
-
-    # コンディションタイプに応じた情報を追加
-    if condition_type == CONDITION_KEY_CHORD:
-        try:
-            from main.data.annotation import ChordAnnotation
-
-            chord_annotation = ChordAnnotation(sample_rate=sample_rate)
-            metadata_lines.append("=== コード情報 ===")
-            metadata_lines.append(
-                chord_annotation.chord_timeline_text(
-                    condition_data, frame_rate=chord_frame_rate
-                )
-            )
-        except Exception as e:
-            logger.warning(f"コード情報の保存に失敗: {e}")
-            metadata_lines.append("=== コード情報 ===")
-            metadata_lines.append(f"chord_shape: {condition_data.shape}")
-            metadata_lines.append(f"(詳細取得失敗: {e})")
-    else:
-        metadata_lines.append("=== コンディション情報 ===")
-        metadata_lines.append(f"{condition_type}_shape: {condition_data.shape}")
-
-    return metadata_lines
 
 
 def save_results(
@@ -575,24 +364,28 @@ def save_results(
         total_s = tensor_to_float(total_seconds[i])
         condition_tensor_i = condition_data[i].cpu()
 
-        metadata_lines = _create_metadata_lines(
-            prompts[i],
-            start_s,
-            total_s,
-            config.seed,
-            condition_type,
-            condition_tensor_i,
-            config.sample_rate,
-            global_index,
-            global_index,
-            config,
-            chord_frame_rate=chord_frame_rate,
+        # JSONメタデータの保存
+        metadata_dict = create_base_metadata(
+            prompt=prompts[i],
+            seed=config.seed,
+            steps=config.generation.steps,
+            cfg_scale=config.generation.cfg_scale,
+            sampler_type=config.generation.sampler_type,
+            device=config.generation.device,
+            exp_config=config.exp_config,
+            checkpoint_path=config.checkpoint_path,
+            start_seconds=start_s,
+            total_seconds=total_s,
+            condition_type=condition_type,
+            condition_shape=list(condition_tensor_i.shape),
+            sample_rate=config.sample_rate,
+            batch_index=global_index,
+            sample_index=i,
+            total_samples=config.num_samples,
+            total_batches=config.num_batches,
         )
-
-        metadata_path = output_dir / f"{file_prefix}_{safe_prompt}.txt"
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(metadata_lines))
-        logger.info(f"メタデータ保存: {metadata_path}")
+        json_path = output_dir / f"{file_prefix}_{safe_prompt}.json"
+        save_json_metadata(metadata_dict, json_path)
 
         save_condition_data(
             condition_tensor_i,
@@ -600,8 +393,6 @@ def save_results(
             output_dir,
             file_prefix,
             safe_prompt,
-            start_s,
-            total_s,
             config.sample_rate,
             chord_frame_rate=chord_frame_rate,
         )
@@ -652,22 +443,20 @@ def save_batch_audio(
         total_s = tensor_to_float(total_seconds[i])
         condition_tensor_i = condition_data[i].cpu()
 
-        metadata_lines = _create_batch_metadata_lines(
-            prompts[i],
-            start_s,
-            total_s,
-            condition_type,
-            condition_tensor_i,
-            config.sample_rate,
-            global_index,
-            config,
-            chord_frame_rate=chord_frame_rate,
-        )
-
-        metadata_path = output_dir / f"{file_prefix}_{safe_prompt}.txt"
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(metadata_lines))
-        logger.info(f"バッチメタデータ保存: {metadata_path}")
+        # JSONメタデータの保存
+        metadata_dict = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "prompt": prompts[i],
+            "start_seconds": start_s,
+            "total_seconds": total_s,
+            "sample_rate": config.sample_rate,
+            "batch_index": global_index,
+            "total_samples": config.num_samples,
+            "condition_type": condition_type,
+            "condition_shape": list(condition_tensor_i.shape),
+        }
+        json_path = output_dir / f"{file_prefix}_{safe_prompt}.json"
+        save_json_metadata(metadata_dict, json_path)
 
         save_condition_data(
             condition_tensor_i,
@@ -675,8 +464,6 @@ def save_batch_audio(
             output_dir,
             file_prefix,
             safe_prompt,
-            start_s,
-            total_s,
             config.sample_rate,
             chord_frame_rate=chord_frame_rate,
         )
@@ -752,7 +539,7 @@ def main() -> None:
 
     try:
         # モデルと設定の読み込み
-        model, cond_cfg = load_model_and_config(config)
+        model, cond_cfg = _load_model_and_config(config)
 
         # コンディショナータイプを検出
         condition_type = _detect_condition_type(model)
@@ -771,23 +558,16 @@ def main() -> None:
             generator.manual_seed(config.seed)
             val_dataloader.generator = generator
 
-        expected_batch_size = getattr(val_dataloader, "batch_size", 1)
-        if expected_batch_size not in (None, 1):
+        if val_dataloader.batch_size not in (None, 1):
             raise ValueError(
-                f"評価データローダーのbatch_sizeは1に設定してください（現在: {expected_batch_size}）"
+                f"評価データローダーのbatch_sizeは1に設定してください（現在: {val_dataloader.batch_size}）"
             )
 
         dataloader_iter = iter(val_dataloader)
         generated_samples = 0
 
-        for _ in range(config.num_samples):
-            try:
-                batch = next(dataloader_iter)
-            except StopIteration:
-                logger.warning(
-                    "バリデーションデータが不足しています。%d個のサンプルのみ生成しました。",
-                    generated_samples,
-                )
+        for batch in dataloader_iter:
+            if config.num_samples >= 0 and generated_samples >= config.num_samples:
                 break
 
             if len(batch) != 5:

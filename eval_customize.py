@@ -34,22 +34,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import hydra
 import torch
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
-from main.data.annotation import ChordAnnotation
-from main.eval_utils import (
-    create_base_metadata_lines,
-    create_chord_metadata_lines,
+from eval_utils import (
+    create_base_metadata,
     generate_safe_filename,
+    load_model_and_config,
     normalize_chord_symbol,
     parse_chord_progression,
     save_audio_file,
     save_chord_lab_file,
-    save_metadata_file,
+    save_json_metadata,
     set_global_seed,
 )
+from main.data.annotation import ChordAnnotation
+from main.module_controlnet_chord import Model
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -91,31 +91,21 @@ def validate_inputs(args: argparse.Namespace, logger: logging.Logger) -> bool:
     return True
 
 
-def load_model_and_config(args: argparse.Namespace, logger: logging.Logger):
+def _load_model_and_config(args: argparse.Namespace, logger: logging.Logger):
     """モデルと設定の読み込み"""
-    logger.info("設定ファイルの読み込み中...")
+    model, cond_cfg = load_model_and_config(
+        exp_config=args.exp_config,
+        checkpoint_path=args.checkpoint,
+        device=args.device,
+        overrides=[
+            f"exp={args.exp_config}",
+        ],
+    )
 
-    with hydra.initialize(config_path=".", version_base=None):
-        cond_cfg = hydra.compose(
-            config_name="config",
-            overrides=[
-                f"exp={args.exp_config}",
-                "datamodule.val_dataset.path=data/musdb18hq/test.tar",
-                "datamodule.train_dataset.path=data/musdb18hq/train.tar",
-                "datamodule.train_dataset.lab_dir=data/musdb_chord_mixed",
-                "datamodule.val_dataset.lab_dir=data/musdb_chord_mixed_test",
-            ],
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"Model must be an instance of main.module_controlnet_chord.Model, but got {type(model)}"
         )
-
-    logger.info("モデルのインスタンス化中...")
-    model = hydra.utils.instantiate(cond_cfg["model"])
-
-    logger.info(f"チェックポイントの読み込み中: {args.checkpoint}")
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(ckpt["state_dict"], strict=False)
-
-    logger.info(f"モデルを{args.device}に移動中...")
-    model = model.to(args.device)
 
     return model, cond_cfg
 
@@ -245,38 +235,29 @@ def save_results(
         44100,
     )
 
-    # メタデータ行を生成（共通部分）
-    metadata_lines = create_base_metadata_lines(
+    # JSONメタデータの保存
+    metadata_dict = create_base_metadata(
         prompt=prompt,
         seed=args.seed,
         steps=args.steps,
         cfg_scale=args.cfg_scale,
         sampler_type=args.sampler_type,
         device=args.device,
-        sample_rate=44100,
         exp_config=args.exp_config,
         checkpoint_path=args.checkpoint,
+        duration=duration,
+        chord_progression=chord_progression,
     )
 
-    # 時間情報を追加（customizeではdurationのみ）
-    metadata_lines.extend(
-        [
-            "=== 時間情報 ===",
-            f"duration: {duration} seconds",
-            "",
-        ]
-    )
+    if chord_progression:
+        chords = parse_chord_progression(chord_progression)
+        metadata_dict["chords"] = chords
+        metadata_dict["normalized_chords"] = [normalize_chord_symbol(c) for c in chords]
+        metadata_dict["chord_count"] = len(chords)
+        metadata_dict["chord_duration"] = duration / len(chords)
 
-    # コード進行情報を追加
-    metadata_lines.extend(create_chord_metadata_lines(chord_progression, duration))
-
-    # メタデータファイルの保存
-    save_metadata_file(
-        metadata_lines,
-        output_dir,
-        timestamp,
-        safe_filename,
-    )
+    json_path = output_dir / f"{timestamp}_{safe_filename}.json"
+    save_json_metadata(metadata_dict, json_path)
 
     # .labファイル（TSV形式）の生成
     save_chord_lab_file(
@@ -379,7 +360,7 @@ def main():
             sys.exit(1)
 
         # モデルと設定の読み込み
-        model, config = load_model_and_config(args, logger)
+        model, config = _load_model_and_config(args, logger)
 
         # コード進行のconditioningを作成
         chord_conditioning = create_chord_conditioning(

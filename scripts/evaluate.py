@@ -13,6 +13,7 @@ from main.eval.chord_metrics import (
     evaluate_directory,
     evaluate_pair,
 )
+from main.eval.clap import calculate_pair_similarity, initialize_clap_model
 from main.eval.fad import compute_fad_score
 
 
@@ -62,9 +63,63 @@ def evaluate_fad_score(
     )
 
 
+def evaluate_clap_score(
+    audio_dir: Path | str,
+    clap_model_path: str = "ckpts/music_audioset_epoch_15_esc_90.14.pt",
+    device: str = "cuda",
+) -> float:
+    audio_dir = Path(audio_dir)
+    # Find all audio files (assuming .wav or .mp3)
+    audio_files = list(audio_dir.glob("*.wav")) + list(audio_dir.glob("*.mp3"))
+
+    if not audio_files:
+        print(f"No audio files found in {audio_dir}")
+        return 0.0
+
+    # Initialize model
+    try:
+        model = initialize_clap_model(weights_path=clap_model_path, device=device)
+    except Exception as e:
+        print(f"Failed to initialize CLAP model: {e}")
+        return 0.0
+
+    total_score = 0.0
+    count = 0
+
+    for audio_file in audio_files:
+        json_file = audio_file.with_suffix(".json")
+
+        if not json_file.exists():
+            continue
+
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+                prompt = metadata.get("prompt")
+
+            if not prompt:
+                continue
+
+            score = calculate_pair_similarity(
+                model, str(audio_file), prompt, device=device
+            )
+            total_score += score
+            count += 1
+
+        except Exception as e:
+            print(f"Error processing {audio_file.name}: {e}")
+            continue
+
+    if count == 0:
+        return 0.0
+
+    return total_score / count
+
+
 class CombinedMetrics(TypedDict):
     chord_metrics: DirectoryMetrics
     audio_metrics: dict[str, float]
+    clap_score: float
 
 
 def evaluate_combined(
@@ -75,6 +130,7 @@ def evaluate_combined(
     chord_frame_rate: float,
     chord_ignore_label: Optional[str] = None,
     fad_model_name: str = "vggish",
+    clap_model_path: str = "ckpts/music_audioset_epoch_15_esc_90.14.pt",
 ) -> CombinedMetrics:
     chord_result = evaluate_chord_directory(
         predicted_dir=predicted_chord_dir,
@@ -90,9 +146,15 @@ def evaluate_combined(
         verbose=False,
     )
 
+    clap_score = evaluate_clap_score(
+        audio_dir=generated_audio_dir,
+        clap_model_path=clap_model_path,
+    )
+
     return CombinedMetrics(
         chord_metrics=chord_result,
         audio_metrics={"fad_score": fad_score},
+        clap_score=clap_score,
     )
 
 
@@ -139,8 +201,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Model name used for FAD calculation (default: vggish)",
     )
     parser.add_argument(
+        "--clap-model-path",
+        type=str,
+        default="ckpts/music_audioset_epoch_15_esc_90.14.pt",
+        help="Path to CLAP model weights",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
+        default=Path("out/evaluation_results.json"),
         help="Path to write JSON results",
     )
     return parser.parse_args(argv)
@@ -171,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         chord_frame_rate=args.chord_frame_rate,
         chord_ignore_label=args.chord_ignore_label,
         fad_model_name=args.fad_model,
+        clap_model_path=args.clap_model_path,
     )
 
     payload = json.dumps(result, indent=2, ensure_ascii=False)
@@ -187,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     print("FAD Score: {:.4f}".format(result["audio_metrics"]["fad_score"]))
+    print("CLAP Score: {:.4f}".format(result["clap_score"]))
 
     return 0
 

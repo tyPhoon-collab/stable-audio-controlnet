@@ -3,9 +3,9 @@
 train: True
 sample_rate: 44100
 chunk_dur: 47.55446713
-chord_frame_rate: 21.53320315
+chord_frame_rate: 21.533203125
 
-log_every_n_steps: 500
+log_every_n_steps: 200
 
 model:
   _target_: main.module_controlnet_chord.Model
@@ -28,7 +28,8 @@ datamodule:
     _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
     path: /app/data/musdb18hq/train.tar
     sample_rate: ${sample_rate}
-    lab_dir: /app/data/musdb_simple_train
+    # lab_dir: /app/data/musdb_small_train
+    lab_dir: /app/data/musdb_train
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: True
@@ -37,13 +38,14 @@ datamodule:
     _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
     path: /app/data/musdb18hq/test_ordered.tar
     sample_rate: ${sample_rate}
-    lab_dir: /app/data/musdb_simple_test
+    # lab_dir: /app/data/musdb_small_test
+    lab_dir: /app/data/musdb_test
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: False
 
   shuffle_size: 24
-  batch_size_train: 8
+  batch_size_train: 16
   batch_size_val: 1
   collate_fn:
     # _target_: main.data.dataset_musdb_chord.collate_fn_genre
