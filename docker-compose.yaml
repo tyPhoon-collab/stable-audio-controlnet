@@ -26,6 +26,7 @@ services:
     volumes:
       - .:/app
       - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/torch:/root/.cache/torch
     environment:
       - PYTHONUNBUFFERED=1
       - HF_TOKEN=${HF_TOKEN}
