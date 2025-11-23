@@ -366,3 +366,188 @@ class ChromaChordConditioner(Conditioner):
         attention_mask = torch.ones(1, target_size, device=device)
 
         return x, attention_mask
+
+
+class CocoMullaChordConditioner(Conditioner):
+    """
+    柔軟な和音表現コンディショナー
+
+    入力: (T_frames, 3) [root, quality_idx, bass_note]
+        root: 0-11 (C-B) or -1 (N)
+        quality_idx: 0-(NUM_CHORD_QUALITIES-1) or -1 (N)
+        bass_note: 0-11 (C-B) or -1 (no bass/N)
+
+    出力次元数:
+        - with_bass=True:  37 (Root 12 + Bass 12 + Chroma 12 + NoChord 1)
+        - with_bass=False: 25 (Root 12 + Chroma 12 + NoChord 1)
+
+    パラメータ:
+        output_dim: 最終出力次元 (デフォルト: 64)
+        embed_dim: 内部埋め込み次元 (デフォルト: 128)
+        conv_channels: Conv1d出力チャネル (デフォルト: 32)
+        conv_kernel_size: Conv1dカーネルサイズ (デフォルト: 7)
+        conv_padding: Conv1dパディング (デフォルト: 3)
+        with_bass: bass noteを含める (デフォルト: True)
+        rotate_chroma: chromaをrootベースで回転させる (デフォルト: False)
+    """
+
+    def __init__(
+        self,
+        output_dim: int = 64,
+        embed_dim: int = 128,
+        conv_channels: int = 32,
+        conv_kernel_size: int = 7,
+        conv_padding: int = 3,
+        with_bass: bool = True,
+        rotate_chroma: bool = False,
+    ):
+        super().__init__(conv_channels, output_dim)
+
+        self.with_bass = with_bass
+        self.rotate_chroma = rotate_chroma
+
+        # 入力次元を決定
+        if with_bass:
+            self.input_dim = 37  # Root 12 + Bass 12 + Chroma 12 + NoChord 1
+        else:
+            self.input_dim = 25  # Root 12 + Chroma 12 + NoChord 1
+
+        # 入力射影層
+        self.input_proj = nn.Linear(self.input_dim, embed_dim)
+
+        self.conv = nn.Conv1d(
+            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
+        )
+
+        # --- 和音構成音 (Chroma) のルックアップテーブルを作成 ---
+        quality_map_tensor = torch.zeros(NUM_CHORD_QUALITIES, 12)
+
+        for i, name in enumerate(QUALITY_NAMES):
+            intervals = QUALITY_CHROMA_INTERVALS.get(name)
+            if intervals:
+                # intervalをmodulo 12してchroma spaceに射影
+                chroma_indices = [interval % 12 for interval in intervals]
+                quality_map_tensor[i, chroma_indices] = 1.0
+
+        # モデルのバッファとして登録 (GPU対応)
+        self.register_buffer("chord_quality_map", quality_map_tensor)
+
+    def encode_chords(
+        self, chords_data: torch.Tensor, device: torch.device
+    ) -> torch.Tensor:
+        """
+        [root, quality_idx, bass_note] から 37/25次元のCoco-Mulla表現を構築。
+
+        Args:
+            chords_data (torch.Tensor): (T_frames, 3)
+                [root, quality_idx, bass_note]
+            device (torch.device): 処理デバイス
+
+        Returns:
+            torch.Tensor: (T_frames, 37 or 25)
+        """
+        T_frames = chords_data.shape[0]
+        c = torch.zeros(T_frames, self.input_dim, device=device)
+
+        # 'no-chord' (root == -1) のフレームを特定
+        no_chord_mask = chords_data[:, 0] == -1
+        chord_mask = ~no_chord_mask
+
+        # 1. No-Chord フレーム
+        if self.with_bass:
+            c[no_chord_mask, 36] = 1.0  # 最後の次元 (NoChord フラグ)
+        else:
+            c[no_chord_mask, 24] = 1.0  # 最後の次元 (NoChord フラグ)
+
+        # 2. Chord フレーム
+        if torch.any(chord_mask):
+            roots = chords_data[chord_mask, 0].long()
+            quality_idx = chords_data[chord_mask, 1].long()
+            bass_notes = chords_data[chord_mask, 2].long()
+
+            # Root one-hot encoding (0-11)
+            c[chord_mask, 0:12] = F.one_hot(roots, num_classes=12).float()
+
+            if self.with_bass:
+                # Bass one-hot encoding (12-23)
+                c[chord_mask, 12:24] = F.one_hot(bass_notes, num_classes=12).float()
+
+                # Chroma (24-35)
+                self._encode_chroma(c, chord_mask, roots, quality_idx, start_idx=24)
+            else:
+                # Chroma (12-23)
+                self._encode_chroma(c, chord_mask, roots, quality_idx, start_idx=12)
+
+        return c
+
+    def _encode_chroma(
+        self,
+        c: torch.Tensor,
+        mask: torch.Tensor,
+        roots: torch.Tensor,
+        quality_idx: torch.Tensor,
+        start_idx: int,
+    ) -> None:
+        """
+        Chroma情報をCoco-Mulla表現に追加。
+
+        Args:
+            c: 出力ベクトル
+            mask: Chordマスク
+            roots: ルート (0-11)
+            quality_idx: 質インデックス
+            start_idx: Chroamの開始インデックス (12 or 24)
+        """
+        # chord_quality_mapを同じデバイスに移動
+        chord_quality_map = tp.cast(torch.Tensor, self.chord_quality_map).to(c.device)
+        base_chroma = chord_quality_map[quality_idx]
+
+        if self.rotate_chroma:
+            # rootベースで回転
+            pitch_classes = torch.arange(12, device=c.device)
+            roll_indices = (pitch_classes.unsqueeze(0) - roots.unsqueeze(1)) % 12
+            rotated_chroma = torch.gather(base_chroma, 1, roll_indices)
+            c[mask, start_idx : start_idx + 12] = rotated_chroma
+        else:
+            # 回転しない (絶対的なchroma)
+            c[mask, start_idx : start_idx + 12] = base_chroma
+
+    def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:
+        """
+        Args:
+            chords (dict): {"data": Tensor (T_frames, 3), "target_size": int}
+            device: 処理デバイス
+
+        Returns:
+            Tuple[Tensor, Tensor]: (conditioning, attention_mask)
+        """
+        target_device = torch.device(device) if isinstance(device, str) else device
+
+        chords_data = chords[0]["data"].to(target_device)
+        target_size = chords[0]["target_size"]
+
+        # 1. Coco-Mulla 表現にエンコード
+        x = self.encode_chords(chords_data, target_device)
+
+        # 2. embed_dim に射影
+        x = self.input_proj(x)
+
+        # 3. Conv1d + Interpolate 処理
+        x = x.transpose(0, 1).unsqueeze(0)  # (1, embed_dim, T_frames)
+        x = self.conv(x)  # (1, conv_channels, T_frames)
+        x = x.transpose(1, 2).squeeze(0)  # (T_frames, conv_channels)
+
+        x = self.proj_out(x)  # (T_frames, output_dim)
+        x = x.transpose(0, 1)  # (output_dim, T_frames)
+
+        # 4. target_size にリサイズ
+        x = F.interpolate(
+            x.unsqueeze(0),
+            size=target_size,
+            mode="linear",
+            align_corners=False,
+        )
+
+        attention_mask = torch.ones(1, target_size, device=target_device)
+
+        return x, attention_mask

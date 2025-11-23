@@ -9,7 +9,7 @@ log_every_n_steps: 200
 
 model:
   _target_: main.module_controlnet_chord.Model
-  lr: 5e-5
+  lr: 5e-6
   lr_beta1: 0.95
   lr_beta2: 0.999
   lr_eps: 1e-6
@@ -20,7 +20,8 @@ model:
   chord_conditioner:
     # _target_: main.chord_conditioner.EmbeddingChordConditioner
     # _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
-    _target_: main.chord_conditioner.ChromaChordConditioner
+    # _target_: main.chord_conditioner.ChromaChordConditioner
+    _target_: main.chord_conditioner.CocoMullaChordConditioner
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule
@@ -29,7 +30,8 @@ datamodule:
     path: /app/data/musdb18hq/train.tar
     sample_rate: ${sample_rate}
     # lab_dir: /app/data/musdb_small_train
-    lab_dir: /app/data/musdb_train
+    # lab_dir: /app/data/musdb_train
+    lab_dir: /app/data/musdb_large_train
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: True
@@ -39,7 +41,8 @@ datamodule:
     path: /app/data/musdb18hq/test_ordered.tar
     sample_rate: ${sample_rate}
     # lab_dir: /app/data/musdb_small_test
-    lab_dir: /app/data/musdb_test
+    # lab_dir: /app/data/musdb_test
+    lab_dir: /app/data/musdb_large_test
     chunk_dur: ${chunk_dur}
     chord_frame_rate: ${chord_frame_rate}
     shardshuffle: False
@@ -105,8 +108,8 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 100
+  max_epochs: 30
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null
-  val_check_interval: ${log_every_n_steps}
+  # val_check_interval: ${log_every_n_steps}

@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 
+CHECKPOINTS_DIR="logs/ckpts/musdb-controlnet-chord_2025-11-21-17-35-45"
 OUTPUT_DIR_PARENT="out/cross_valid"
 mkdir -p "$OUTPUT_DIR_PARENT"
 
 SKIP_COUNT=0
 SKIP_LIMIT=0  # 必要に応じてスキップするチェックポイントの数を設定
 
-for CHECKPOINT in $(ls -1 logs/ckpts/musdb-controlnet-chord_2025-11-21-17-35-45/*.ckpt | sort); do
+
+for CHECKPOINT in $(ls -1 "$CHECKPOINTS_DIR"/*.ckpt | sort); do
     [ -f "$CHECKPOINT" ] || continue
 
     if [ $SKIP_COUNT -lt $SKIP_LIMIT ]; then
