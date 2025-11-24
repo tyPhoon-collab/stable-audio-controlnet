@@ -1,13 +1,12 @@
 import typing as tp
 
 import torch
-
 from einops import rearrange
+from stable_audio_tools.models.blocks import FourierFeatures
 from torch import nn
 from torch.nn import functional as F
 from x_transformers import ContinuousTransformerWrapper, Encoder
 
-from stable_audio_tools.models.blocks import FourierFeatures
 from main.controlnet.transformer import ContinuousTransformer
 
 
@@ -355,7 +354,11 @@ class DiffusionTransformer(nn.Module):
             else:
                 batch_masks = None
 
-            batch_controlnet_embeds = controlnet_embeds
+            # controlnet_embedsもCFG処理で2倍にする
+            if controlnet_embeds is not None:
+                batch_controlnet_embeds = [torch.cat([emb, emb], dim=0) for emb in controlnet_embeds]
+            else:
+                batch_controlnet_embeds = None
 
             batch_output = self._forward(
                 batch_inputs,

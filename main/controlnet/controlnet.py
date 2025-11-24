@@ -11,24 +11,26 @@ from x_transformers import ContinuousTransformerWrapper, Encoder
 # from main.controlnet.conditioning import ControlNetConditioningEmbedding
 
 
-
 class ControlNetDiffusionTransformer(nn.Module):
-    def __init__(self,
-                 io_channels=32,
-                 patch_size=1,
-                 embed_dim=768,
-                 cond_token_dim=0,
-                 project_cond_tokens=True,
-                 global_cond_dim=0,
-                 project_global_cond=True,
-                 input_concat_dim=0,
-                 prepend_cond_dim=0,
-                 depth=12,
-                 num_heads=8,
-                 transformer_type: tp.Literal["x-transformers", "continuous_transformer"] = "x-transformers",
-                 global_cond_type: tp.Literal["prepend", "adaLN"] = "prepend",
-                 **kwargs):
-
+    def __init__(
+        self,
+        io_channels=32,
+        patch_size=1,
+        embed_dim=768,
+        cond_token_dim=0,
+        project_cond_tokens=True,
+        global_cond_dim=0,
+        project_global_cond=True,
+        input_concat_dim=0,
+        prepend_cond_dim=0,
+        depth=12,
+        num_heads=8,
+        transformer_type: tp.Literal[
+            "x-transformers", "continuous_transformer"
+        ] = "x-transformers",
+        global_cond_type: tp.Literal["prepend", "adaLN"] = "prepend",
+        **kwargs,
+    ):
         super().__init__()
 
         self.cond_token_dim = cond_token_dim
@@ -51,7 +53,7 @@ class ControlNetDiffusionTransformer(nn.Module):
             self.to_cond_embed = nn.Sequential(
                 nn.Linear(cond_token_dim, cond_embed_dim, bias=False),
                 nn.SiLU(),
-                nn.Linear(cond_embed_dim, cond_embed_dim, bias=False)
+                nn.Linear(cond_embed_dim, cond_embed_dim, bias=False),
             )
         else:
             cond_embed_dim = 0
@@ -62,7 +64,7 @@ class ControlNetDiffusionTransformer(nn.Module):
             self.to_global_embed = nn.Sequential(
                 nn.Linear(global_cond_dim, global_embed_dim, bias=False),
                 nn.SiLU(),
-                nn.Linear(global_embed_dim, global_embed_dim, bias=False)
+                nn.Linear(global_embed_dim, global_embed_dim, bias=False),
             )
 
         if prepend_cond_dim > 0:
@@ -70,7 +72,7 @@ class ControlNetDiffusionTransformer(nn.Module):
             self.to_prepend_embed = nn.Sequential(
                 nn.Linear(prepend_cond_dim, embed_dim, bias=False),
                 nn.SiLU(),
-                nn.Linear(embed_dim, embed_dim, bias=False)
+                nn.Linear(embed_dim, embed_dim, bias=False),
             )
 
         self.input_concat_dim = input_concat_dim
@@ -102,12 +104,11 @@ class ControlNetDiffusionTransformer(nn.Module):
                     rotary_pos_emb=True,
                     ff_swish=True,
                     ff_glu=True,
-                    **kwargs
-                )
+                    **kwargs,
+                ),
             )
 
         elif self.transformer_type == "continuous_transformer":
-
             global_dim = None
 
             if self.global_cond_type == "adaLN":
@@ -123,7 +124,7 @@ class ControlNetDiffusionTransformer(nn.Module):
                 cross_attend=cond_token_dim > 0,
                 cond_token_dim=cond_embed_dim,
                 global_cond_dim=global_dim,
-                **kwargs
+                **kwargs,
             )
 
         else:
@@ -138,26 +139,28 @@ class ControlNetDiffusionTransformer(nn.Module):
         nn.init.zeros_(self.conv_in.weight)
         nn.init.zeros_(self.conv_in.bias)
 
-        self.conv_outs = nn.ModuleList([nn.Conv1d(embed_dim, embed_dim, 1) for _ in range(depth)])
+        self.conv_outs = nn.ModuleList(
+            [nn.Conv1d(embed_dim, embed_dim, 1) for _ in range(depth)]
+        )
         for conv_out in self.conv_outs:
             nn.init.zeros_(conv_out.weight)
             nn.init.zeros_(conv_out.bias)
 
     def _forward(
-            self,
-            x,
-            t,
-            controlnet_cond=None,
-            mask=None,
-            cross_attn_cond=None,
-            cross_attn_cond_mask=None,
-            input_concat_cond=None,
-            global_embed=None,
-            prepend_cond=None,
-            prepend_cond_mask=None,
-            cfg_scale=None,
-            **kwargs):
-
+        self,
+        x,
+        t,
+        controlnet_cond=None,
+        mask=None,
+        cross_attn_cond=None,
+        cross_attn_cond_mask=None,
+        input_concat_cond=None,
+        global_embed=None,
+        prepend_cond=None,
+        prepend_cond_mask=None,
+        cfg_scale=None,
+        **kwargs,
+    ):
         if cross_attn_cond is not None:
             cross_attn_cond = self.to_cond_embed(cross_attn_cond)
 
@@ -177,15 +180,18 @@ class ControlNetDiffusionTransformer(nn.Module):
                 prepend_mask = prepend_cond_mask
 
         if input_concat_cond is not None:
-
             # Interpolate input_concat_cond to the same length as x
             if input_concat_cond.shape[2] != x.shape[2]:
-                input_concat_cond = F.interpolate(input_concat_cond, (x.shape[2],), mode='nearest')
+                input_concat_cond = F.interpolate(
+                    input_concat_cond, (x.shape[2],), mode="nearest"
+                )
 
             x = torch.cat([x, input_concat_cond], dim=1)
 
         # Get the batch of timestep embeddings
-        timestep_embed = self.to_timestep_embed(self.timestep_features(t[:, None]))  # (b, embed_dim)
+        timestep_embed = self.to_timestep_embed(
+            self.timestep_features(t[:, None])
+        )  # (b, embed_dim)
 
         # Timestep embedding is considered a global embedding. Add to the global conditioning if it exists
         if global_embed is not None:
@@ -198,12 +204,21 @@ class ControlNetDiffusionTransformer(nn.Module):
             if prepend_inputs is None:
                 # Prepend inputs are just the global embed, and the mask is all ones
                 prepend_inputs = global_embed.unsqueeze(1)
-                prepend_mask = torch.ones((x.shape[0], 1), device=x.device, dtype=torch.bool)
+                prepend_mask = torch.ones(
+                    (x.shape[0], 1), device=x.device, dtype=torch.bool
+                )
             else:
                 # Prepend inputs are the prepend conditioning + the global embed
-                prepend_inputs = torch.cat([prepend_inputs, global_embed.unsqueeze(1)], dim=1)
-                prepend_mask = torch.cat([prepend_mask, torch.ones((x.shape[0], 1), device=x.device, dtype=torch.bool)],
-                                         dim=1)
+                prepend_inputs = torch.cat(
+                    [prepend_inputs, global_embed.unsqueeze(1)], dim=1
+                )
+                prepend_mask = torch.cat(
+                    [
+                        prepend_mask,
+                        torch.ones((x.shape[0], 1), device=x.device, dtype=torch.bool),
+                    ],
+                    dim=1,
+                )
 
             prepend_length = prepend_inputs.shape[1]
 
@@ -221,40 +236,49 @@ class ControlNetDiffusionTransformer(nn.Module):
         if self.patch_size > 1:
             x = rearrange(x, "b (t p) c -> b t (c p)", p=self.patch_size)
 
-
         if self.transformer_type == "continuous_transformer":
-            _, info = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond,
-                                      context_mask=cross_attn_cond_mask, mask=mask, prepend_mask=prepend_mask,
-                                      return_info=True, **extra_args, **kwargs)
+            _, info = self.transformer(
+                x,
+                prepend_embeds=prepend_inputs,
+                context=cross_attn_cond,
+                context_mask=cross_attn_cond_mask,
+                mask=mask,
+                prepend_mask=prepend_mask,
+                return_info=True,
+                **extra_args,
+                **kwargs,
+            )
         else:
-            raise NotImplementedError(f"Unknown transformer type: {self.transformer_type}")
+            raise NotImplementedError(
+                f"Unknown transformer type: {self.transformer_type}"
+            )
 
         out_info = []
         for i, conv_out in enumerate(self.conv_outs):
-            h = rearrange(info['hidden_states'][i], "b t c -> b c t")
+            h = rearrange(info["hidden_states"][i], "b t c -> b c t")
             h = rearrange(conv_out(h), "b c t -> b t c")
             out_info.append(h)
         return out_info
 
     def forward(
-            self,
-            x,
-            t,
-            controlnet_cond=None,
-            cross_attn_cond=None,
-            cross_attn_cond_mask=None,
-            input_concat_cond=None,
-            negative_cross_attn_cond=None,
-            negative_cross_attn_mask=None,
-            global_embed=None,
-            prepend_cond=None,
-            prepend_cond_mask=None,
-            causal=False,
-            cfg_dropout_prob=0.0,
-            cfg_scale=1.0,
-            mask=None,
-            **kwargs):
-
+        self,
+        x,
+        t,
+        controlnet_cond=None,
+        cross_attn_cond=None,
+        cross_attn_cond_mask=None,
+        input_concat_cond=None,
+        negative_cross_attn_cond=None,
+        negative_cross_attn_mask=None,
+        global_embed=None,
+        prepend_cond=None,
+        prepend_cond_mask=None,
+        causal=False,
+        cfg_dropout_prob=0.0,
+        cfg_scale=1.0,
+        mask=None,
+        **kwargs,
+    ):
         assert causal == False, "Causal mode is not supported for DiffusionTransformer"
 
         if cross_attn_cond_mask is not None:
@@ -269,95 +293,47 @@ class ControlNetDiffusionTransformer(nn.Module):
         prepend_dropout_mask = None
         if cfg_dropout_prob > 0.0:
             if cross_attn_cond is not None:
-                null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
+                null_embed = torch.zeros_like(
+                    cross_attn_cond, device=cross_attn_cond.device
+                )
                 cross_attn_dropout_mask = torch.bernoulli(
-                torch.full((cross_attn_cond.shape[0], 1, 1), cfg_dropout_prob, device=cross_attn_cond.device)).to(
-                torch.bool)
-                cross_attn_cond = torch.where(cross_attn_dropout_mask, null_embed, cross_attn_cond)
+                    torch.full(
+                        (cross_attn_cond.shape[0], 1, 1),
+                        cfg_dropout_prob,
+                        device=cross_attn_cond.device,
+                    )
+                ).to(torch.bool)
+                cross_attn_cond = torch.where(
+                    cross_attn_dropout_mask, null_embed, cross_attn_cond
+                )
 
             if prepend_cond is not None:
                 null_embed = torch.zeros_like(prepend_cond, device=prepend_cond.device)
                 prepend_dropout_mask = torch.bernoulli(
-                    torch.full((prepend_cond.shape[0], 1, 1), cfg_dropout_prob, device=prepend_cond.device)).to(
-                   torch.bool)
-                prepend_cond = torch.where(prepend_dropout_mask, null_embed, prepend_cond)
+                    torch.full(
+                        (prepend_cond.shape[0], 1, 1),
+                        cfg_dropout_prob,
+                        device=prepend_cond.device,
+                    )
+                ).to(torch.bool)
+                prepend_cond = torch.where(
+                    prepend_dropout_mask, null_embed, prepend_cond
+                )
 
-        if cfg_scale != 1.0 and (cross_attn_cond is not None or prepend_cond is not None):
-            # Classifier-free guidance
-            # Concatenate conditioned and unconditioned inputs on the batch dimension
-            batch_inputs = torch.cat([x, x], dim=0)
-            batch_timestep = torch.cat([t, t], dim=0)
-            batch_controlnet_cond = torch.cat([controlnet_cond, controlnet_cond], dim=0)
+        # batch_cfg=Trueを前提とする（diffusion.pyで強制されている）
+        # controlnet_condをxのバッチサイズに合わせる
+        if controlnet_cond is not None and controlnet_cond.shape[0] != x.shape[0]:
+            repeat_factor = x.shape[0] // controlnet_cond.shape[0]
+            if (
+                repeat_factor * controlnet_cond.shape[0] == x.shape[0]
+                and repeat_factor > 0
+            ):
+                controlnet_cond = controlnet_cond.repeat(repeat_factor, 1, 1)
 
-            if global_embed is not None:
-                batch_global_cond = torch.cat([global_embed, global_embed], dim=0)
-            else:
-                batch_global_cond = None
-
-            if input_concat_cond is not None:
-                batch_input_concat_cond = torch.cat([input_concat_cond, input_concat_cond], dim=0)
-            else:
-                batch_input_concat_cond = None
-
-            batch_cond = None
-            batch_cond_masks = None
-
-            # Handle CFG for cross-attention conditioning
-            if cross_attn_cond is not None:
-
-                null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
-
-                # For negative cross-attention conditioning, replace the null embed with the negative cross-attention conditioning
-                if negative_cross_attn_cond is not None:
-
-                    # If there's a negative cross-attention mask, set the masked tokens to the null embed
-                    if negative_cross_attn_mask is not None:
-                        negative_cross_attn_mask = negative_cross_attn_mask.to(torch.bool).unsqueeze(2)
-
-                        negative_cross_attn_cond = torch.where(negative_cross_attn_mask, negative_cross_attn_cond,
-                                                               null_embed)
-
-                    batch_cond = torch.cat([cross_attn_cond, negative_cross_attn_cond], dim=0)
-
-                else:
-                    batch_cond = torch.cat([cross_attn_cond, null_embed], dim=0)
-
-                if cross_attn_cond_mask is not None:
-                    batch_cond_masks = torch.cat([cross_attn_cond_mask, cross_attn_cond_mask], dim=0)
-
-            batch_prepend_cond = None
-            batch_prepend_cond_mask = None
-
-            if prepend_cond is not None:
-
-                null_embed = torch.zeros_like(prepend_cond, device=prepend_cond.device)
-
-                batch_prepend_cond = torch.cat([prepend_cond, null_embed], dim=0)
-
-                if prepend_cond_mask is not None:
-                    batch_prepend_cond_mask = torch.cat([prepend_cond_mask, prepend_cond_mask], dim=0)
-
-            if mask is not None:
-                batch_masks = torch.cat([mask, mask], dim=0)
-            else:
-                batch_masks = None
-
-            return self._forward(
-                batch_inputs,
-                batch_timestep,
-                controlnet_cond=batch_controlnet_cond,
-                cross_attn_cond=batch_cond,
-                cross_attn_cond_mask=batch_cond_masks,
-                input_concat_cond=batch_input_concat_cond,
-                global_embed=batch_global_cond,
-                prepend_cond=batch_prepend_cond,
-                prepend_cond_mask=batch_prepend_cond_mask,
-                mask=batch_masks,
-                **kwargs
-            ), cross_attn_dropout_mask, prepend_dropout_mask
-
-        else:
-            return self._forward(
+        # batch_cfg=Trueの場合、CFG処理は外部で既に行われているため、
+        # ここでは単純に_forwardを呼び出すだけ
+        return (
+            self._forward(
                 x,
                 t,
                 controlnet_cond=controlnet_cond,
@@ -368,6 +344,8 @@ class ControlNetDiffusionTransformer(nn.Module):
                 prepend_cond=prepend_cond,
                 prepend_cond_mask=prepend_cond_mask,
                 mask=mask,
-                **kwargs
-            ), cross_attn_dropout_mask, prepend_dropout_mask
-
+                **kwargs,
+            ),
+            cross_attn_dropout_mask,
+            prepend_dropout_mask,
+        )
