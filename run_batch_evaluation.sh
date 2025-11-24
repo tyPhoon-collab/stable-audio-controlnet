@@ -10,37 +10,36 @@
 #   bash run_batch_evaluation.sh [options]
 #
 # 必須オプション:
-#   --checkpoint CKPT          チェックポイントパス
+#   --ckpt CKPT                チェックポイントパス
 #
 # オプション:
-#   --exp-config CONFIG        実験設定名 (デフォルト: train_musdb_controlnet_chord)
-#   --num-samples N            生成サンプル数 (デフォルト: 5)
-#   --num-batches N            処理バッチ数 (デフォルト: 2)
-#   --output-dir-parent DIR    出力ディレクトリの親ディレクトリ (デフォルト: out)
+#   --config CONFIG            実験設定名 (デフォルト: train_musdb_controlnet_chord)
+#   --samples N                生成サンプル数 (デフォルト: 5)
+#   --batch-size N             バッチサイズ (デフォルト: 1)
 #   --chord-dict DICT          和音辞書 (デフォルト: small)
 #   --chord-frame-rate RATE    和音フレームレート (デフォルト: 24.0)
 #   --clap-model-path PATH     CLAPモデルパス (デフォルト: ckpts/music_audioset_epoch_15_esc_90.14.pt)
+#   --output-dir DIR           出力ディレクトリ (デフォルト: out)
 #   --help                     ヘルプを表示
 #
 # 例:
 #   bash run_batch_evaluation.sh \
-#       --checkpoint ckpts/mabst/epoch_50.pt \
-#       --num-samples 10 \
-#       --num-batches 2
+#       --ckpt ckpts/mabst/epoch_50.pt \
+#       --samples 10
 #
 ###############################################################################
 
 MODEL_CONTAINER="stable-audio-controlnet-stable-audio-controlnet-1"
 ACR_CONTAINER="ismir2019-large-vocabulary-chord-recognition-acr-1"
 
-EXP_CONFIG="train_musdb_controlnet_chord"
-NUM_SAMPLES=5
-NUM_BATCHES=1
-OUTPUT_DIR_PARENT="out"
+CONFIG="train_musdb_controlnet_chord"
+SAMPLES=5
+BATCH_SIZE=1
+OUTPUT_DIR="out"
 CHORD_DICT="submission"
 CHORD_FRAME_RATE=21.533203125
 CLAP_MODEL_PATH="ckpts/music_audioset_epoch_15_esc_90.14.pt"
-CHECKPOINT=""
+CKPT=""
 
 set -e
 
@@ -77,11 +76,11 @@ run_audio_generation() {
     log_info "実行: docker exec -it $MODEL_CONTAINER python eval_batch.py ..."
 
     docker exec -it "$MODEL_CONTAINER" python eval_batch.py \
-        --exp_config "$EXP_CONFIG" \
-        --checkpoint "$CHECKPOINT" \
-        --num_samples "$NUM_SAMPLES" \
-        --num_batches "$NUM_BATCHES" \
-        --output_dir "$OUTPUT_DIR/generated"
+        --config "$CONFIG" \
+        --ckpt "$CKPT" \
+        --samples "$SAMPLES" \
+        --batch-size "$BATCH_SIZE" \
+        --output "$OUTPUT_DIR/generated"
 
     if [ $? -eq 0 ]; then
         log_success "音声生成が完了しました"
@@ -160,24 +159,24 @@ run_evaluation() {
 # コマンドライン引数のパース
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --checkpoint)
-            CHECKPOINT="$2"
+        --ckpt)
+            CKPT="$2"
             shift 2
             ;;
-        --exp-config)
-            EXP_CONFIG="$2"
+        --config)
+            CONFIG="$2"
             shift 2
             ;;
-        --num-samples)
-            NUM_SAMPLES="$2"
+        --samples)
+            SAMPLES="$2"
             shift 2
             ;;
-        --num-batches)
-            NUM_BATCHES="$2"
+        --batch-size)
+            BATCH_SIZE="$2"
             shift 2
             ;;
-        --output-dir-parent)
-            OUTPUT_DIR_PARENT="$2"
+        --output-dir)
+            OUTPUT_DIR="$2"
             shift 2
             ;;
         --chord-dict)
@@ -205,20 +204,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 必須オプションの確認
-if [ -z "$CHECKPOINT" ]; then
-    log_error "チェックポイントを指定してください (--checkpoint)"
+if [ -z "$CKPT" ]; then
+    log_error "チェックポイントを指定してください (--ckpt)"
     show_help
     exit 1
 fi
 
-if [ ! -f "$CHECKPOINT" ]; then
-    log_error "チェックポイントファイルが存在しません: $CHECKPOINT"
+if [ ! -f "$CKPT" ]; then
+    log_error "チェックポイントファイルが存在しません: $CKPT"
     exit 1
 fi
 
 # 出力ディレクトリを日付でネストさせる
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-OUTPUT_DIR="${OUTPUT_DIR_PARENT}/${TIMESTAMP}"
+OUTPUT_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
 
 # メイン処理開始
 echo ""
@@ -229,10 +228,10 @@ echo ""
 
 # 設定情報を表示
 echo -e "${BLUE}=== 設定情報 ===${NC}"
-echo "実験設定: $EXP_CONFIG"
-echo "チェックポイント: $CHECKPOINT"
-echo "サンプル数: $NUM_SAMPLES"
-echo "バッチ数: $NUM_BATCHES"
+echo "実験設定: $CONFIG"
+echo "チェックポイント: $CKPT"
+echo "サンプル数: $SAMPLES"
+echo "バッチサイズ: $BATCH_SIZE"
 echo "出力ディレクトリ: $OUTPUT_DIR"
 echo "和音辞書: $CHORD_DICT"
 echo "和音フレームレート: $CHORD_FRAME_RATE"

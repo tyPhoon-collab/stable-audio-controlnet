@@ -22,8 +22,9 @@ for CHECKPOINT in $(ls -1 "$CHECKPOINTS_DIR"/*.ckpt | sort); do
     echo "処理中: $CHECKPOINT (Epoch: $EPOCH)"
 
     bash run_batch_evaluation.sh \
-        --checkpoint "$CHECKPOINT" \
-        --exp-config train_musdb_controlnet_chord \
-        --num-samples 100 \
-        --output-dir-parent "$OUTPUT_DIR_PARENT"
+        --ckpt "$CHECKPOINT" \
+        --config train_musdb_controlnet_chord \
+        --samples 100 \
+        --batch-size 20 \
+        --output-dir "$OUTPUT_DIR_PARENT"
 done

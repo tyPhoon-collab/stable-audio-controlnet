@@ -114,6 +114,7 @@ def create_chord_conditioning(
     model,
     chord_progression: Optional[str],
     duration: float,
+    batch_size: int,
     sample_rate: int = 44100,
     logger: Optional[logging.Logger] = None,
 ):
@@ -159,8 +160,18 @@ def create_chord_conditioning(
     if logger:
         logger.info(f"コードテンソル形状: {chord_tensor.shape}")
 
+    # バッチサイズ分複製
+    # chord_tensorは(T_frames, 3)の形状
+    # バッチ次元を追加して (batch_size, T_frames, 3) にする
+    chord_tensor_batched = (
+        chord_tensor.unsqueeze(0).expand(batch_size, -1, -1).to(model.device)
+    )
+
+    if logger:
+        logger.info(f"バッチ化されたコードテンソル形状: {chord_tensor_batched.shape}")
+
     return {
-        "data": chord_tensor.to(model.device),
+        "data": chord_tensor_batched,
         "target_size": sample_length // model.model.pretransform.downsampling_ratio,
     }
 
@@ -174,28 +185,33 @@ def generate_audio(
     logger: logging.Logger,
 ):
     """音声生成処理"""
-    logger.info(f"音声生成中 - プロンプト: '{prompt}', 時間: {duration}秒")
+    logger.info(
+        f"音声生成中 - プロンプト: '{prompt}', 時間: {duration}秒, バッチサイズ: {args.batch_size}"
+    )
 
     sample_size = int(duration * 44100)  # 44.1kHzでサンプル計算
 
+    # バッチサイズ分のconditioningを作成
     conditioning = [
         {
             "prompt": prompt,
             "seconds_start": 0.0,
             "seconds_total": duration,
         }
+        for _ in range(args.batch_size)
     ]
 
     # コード進行のconditioningを追加（利用可能な場合）
     if chord_conditioning is not None:
         logger.info("コード進行のconditioningを追加")
-        conditioning[0]["chord"] = chord_conditioning
+        for i in range(args.batch_size):
+            conditioning[i]["chord"] = [chord_conditioning]
 
     logger.info("拡散モデルによる生成を開始...")
     output = generate_diffusion_cond(
         model.model,
         seed=args.seed,
-        batch_size=1,
+        batch_size=args.batch_size,
         steps=args.steps,
         cfg_scale=args.cfg_scale,
         conditioning=conditioning,  # type: ignore[arg-type]
@@ -206,7 +222,8 @@ def generate_audio(
         device=args.device,
     )
 
-    return output[0]  # 最初のサンプルを返す
+    logger.info(f"生成された音声数: {len(output)}")
+    return output  # 全バッチを返す
 
 
 def save_results(
@@ -218,7 +235,18 @@ def save_results(
     index: int,
     logger: logging.Logger,
 ):
-    """結果の保存"""
+    """
+    結果の保存
+
+    Args:
+        output_audio: 生成された音声テンソル
+        prompt: プロンプト
+        chord_progression: コード進行
+        duration: 生成時間
+        args: コマンドライン引数
+        index: バッチ内のインデックス
+        logger: ロガー
+    """
     safe_filename = generate_safe_filename(prompt, index)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -248,6 +276,10 @@ def save_results(
         duration=duration,
         chord_progression=chord_progression,
     )
+
+    # バッチ情報を追加
+    metadata_dict["batch_size"] = args.batch_size
+    metadata_dict["batch_index"] = index
 
     if chord_progression:
         chords = parse_chord_progression(chord_progression)
@@ -341,6 +373,13 @@ def main():
         help="ログレベル",
     )
 
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="バッチサイズ",
+    )
+
     args = parser.parse_args()
 
     # ログの設定
@@ -350,6 +389,7 @@ def main():
     logger.info(f"プロンプト: {args.prompt}")
     logger.info(f"コード進行: {args.chord_progression or 'なし'}")
     logger.info(f"生成時間: {args.duration}秒")
+    logger.info(f"バッチサイズ: {args.batch_size}")
 
     try:
         # 乱数シードを統一
@@ -364,24 +404,27 @@ def main():
 
         # コード進行のconditioningを作成
         chord_conditioning = create_chord_conditioning(
-            model, args.chord_progression, args.duration, logger=logger
+            model, args.chord_progression, args.duration, args.batch_size, logger=logger
         )
 
         # 音声生成
-        output_audio = generate_audio(
+        output_audios = generate_audio(
             model, args.prompt, chord_conditioning, args.duration, args, logger
         )
 
-        # 結果の保存
-        save_results(
-            output_audio,
-            args.prompt,
-            args.chord_progression,
-            args.duration,
-            args,
-            0,
-            logger,
-        )
+        # 結果の保存（各バッチ）
+        logger.info(f"{len(output_audios)}個の音声ファイルを保存中...")
+        for i, output_audio in enumerate(output_audios):
+            logger.info(f"バッチ {i + 1}/{len(output_audios)} を保存中...")
+            save_results(
+                output_audio,
+                args.prompt,
+                args.chord_progression,
+                args.duration,
+                args,
+                i,
+                logger,
+            )
 
         logger.info("=== 生成完了 ===")
 

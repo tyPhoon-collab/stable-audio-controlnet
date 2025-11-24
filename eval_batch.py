@@ -33,7 +33,7 @@ class EvalConfig:
 
     seed: int
     num_samples: int
-    num_batches: int
+    batch_size: int
     exp_config: str
     checkpoint_path: str
     output_dir: str
@@ -55,14 +55,14 @@ def parse_args() -> argparse.Namespace:
 
     # 必須引数
     parser.add_argument(
-        "--exp_config",
+        "--config",
         type=str,
         required=True,
         choices=["train_musdb_controlnet_chord"],
         help="実験設定ファイル名 (chord)",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--ckpt",
         type=str,
         required=True,
         help="チェックポイントファイルのパス",
@@ -70,13 +70,13 @@ def parse_args() -> argparse.Namespace:
 
     # オプション引数
     parser.add_argument(
-        "--num_samples",
+        "--samples",
         type=int,
-        default=2,
-        help="生成するサンプル数 (デフォルト: 2)",
+        default=None,
+        help="生成するサンプル数 (デフォルト: None = すべて生成)",
     )
     parser.add_argument(
-        "--output_dir",
+        "--output",
         type=str,
         default="out",
         help="出力ディレクトリ (デフォルト: out)",
@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         help="拡散ステップ数 (デフォルト: 100)",
     )
     parser.add_argument(
-        "--cfg_scale",
+        "--cfg-scale",
         type=float,
         default=7.0,
         help="Classifier-free guidance scale (デフォルト: 7.0)",
@@ -107,19 +107,19 @@ def parse_args() -> argparse.Namespace:
         help="使用するデバイス (デフォルト: cuda)",
     )
     parser.add_argument(
-        "--sample_rate",
+        "--sample-rate",
         type=int,
         default=44100,
         help="サンプルレート (デフォルト: 44100)",
     )
     parser.add_argument(
-        "--num_batches",
+        "--batch-size",
         type=int,
         default=1,
-        help="処理するバッチ数 (デフォルト: 1)",
+        help="バッチサイズ (生成時のバッチ処理数、デフォルト: 1)",
     )
     parser.add_argument(
-        "--save_batch_audio",
+        "--save-batch-audio",
         action="store_true",
         help="元のバッチ音源も保存するかどうか",
     )
@@ -151,6 +151,11 @@ def _load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
         raise TypeError(
             f"Model must be an instance of main.module_controlnet_chord.Model, but got {type(model)}"
         )
+
+    # バッチサイズを設定ファイルに反映
+    if "datamodule" in cond_cfg:
+        cond_cfg["datamodule"]["batch_size_val"] = config.batch_size
+        logger.info(f"DataLoaderのbatch_size_valを{config.batch_size}に設定しました")
 
     return model, cond_cfg
 
@@ -382,7 +387,7 @@ def save_results(
             batch_index=global_index,
             sample_index=i,
             total_samples=config.num_samples,
-            total_batches=config.num_batches,
+            batch_size=config.batch_size,
         )
         json_path = output_dir / f"{file_prefix}_{safe_prompt}.json"
         save_json_metadata(metadata_dict, json_path)
@@ -472,8 +477,7 @@ def save_batch_audio(
 def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
     """コマンドライン引数から設定オブジェクトを生成
 
-            global_index,
-        args: パースされたコマンドライン引数
+    args: パースされたコマンドライン引数
 
     Returns:
         評価設定オブジェクト
@@ -489,11 +493,11 @@ def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
 
     return EvalConfig(
         seed=args.seed,
-        num_samples=args.num_samples,
-        num_batches=args.num_batches,
-        exp_config=args.exp_config,
-        checkpoint_path=args.checkpoint,
-        output_dir=args.output_dir,
+        num_samples=args.samples,
+        batch_size=args.batch_size,
+        exp_config=args.config,
+        checkpoint_path=args.ckpt,
+        output_dir=args.output,
         sample_rate=args.sample_rate,
         generation=generation_config,
         save_batch_audio=args.save_batch_audio,
@@ -508,8 +512,11 @@ def _print_config(config: EvalConfig) -> None:
     """
     logger.info(f"実験設定: {config.exp_config}")
     logger.info(f"チェックポイント: {config.checkpoint_path}")
-    logger.info(f"処理するバッチ数: {config.num_batches}")
-    logger.info(f"サンプル数: {config.num_samples}")
+    logger.info(f"バッチサイズ: {config.batch_size}")
+    num_samples_str = (
+        "すべて" if config.num_samples is None else str(config.num_samples)
+    )
+    logger.info(f"生成サンプル数: {num_samples_str}")
     logger.info(f"拡散ステップ数: {config.generation.steps}")
     logger.info(f"CFG scale: {config.generation.cfg_scale}")
     logger.info(f"出力ディレクトリ: {config.output_dir}")
@@ -549,7 +556,7 @@ def main() -> None:
         # chord_frame_rate = model.hparams.chord_frame_rate
         chord_frame_rate = model.hparams.get("chord_frame_rate", 24.0)
 
-        # バリデーションデータローダーを取得（batch_size=1前提）
+        # バリデーションデータローダーを取得
         datamodule = hydra.utils.instantiate(cond_cfg["datamodule"])
         val_dataloader = datamodule.val_dataloader()
 
@@ -558,16 +565,16 @@ def main() -> None:
             generator.manual_seed(config.seed)
             val_dataloader.generator = generator
 
-        if val_dataloader.batch_size not in (None, 1):
-            raise ValueError(
-                f"評価データローダーのbatch_sizeは1に設定してください（現在: {val_dataloader.batch_size}）"
-            )
+        logger.info(f"DataLoaderのバッチサイズ: {val_dataloader.batch_size}")
 
         dataloader_iter = iter(val_dataloader)
         generated_samples = 0
 
         for batch in dataloader_iter:
-            if config.num_samples >= 0 and generated_samples >= config.num_samples:
+            if (
+                config.num_samples is not None
+                and generated_samples >= config.num_samples
+            ):
                 break
 
             if len(batch) != 5:
@@ -575,14 +582,28 @@ def main() -> None:
                     f"Unexpected batch format with {len(batch)} elements (期待値: 5)"
                 )
 
-            logger.info(f"サンプル {generated_samples + 1} の処理開始...")
-
             x, prompts, start_seconds, total_seconds, condition_data = batch
             x = torch.clip(x, -1, 1)
 
-            if x.shape[0] != 1:
-                raise ValueError("この評価スクリプトはbatch_size=1を前提としています。")
+            # バッチサイズを取得
+            batch_size = x.shape[0]
 
+            # 残りサンプル数を計算
+            if config.num_samples is not None:
+                remaining = config.num_samples - generated_samples
+                if remaining < batch_size:
+                    # バッチを切り詰める
+                    x = x[:remaining]
+                    if isinstance(prompts, (list, tuple)):
+                        prompts = list(prompts)[:remaining]
+                    else:
+                        prompts = [prompts]
+                    start_seconds = start_seconds[:remaining]
+                    total_seconds = total_seconds[:remaining]
+                    condition_data = condition_data[:remaining]
+                    batch_size = remaining
+
+            # データの正規化
             if isinstance(prompts, (list, tuple)):
                 prompts = list(prompts)
             else:
@@ -598,7 +619,9 @@ def main() -> None:
             if total_seconds.ndim == 0:
                 total_seconds = total_seconds.unsqueeze(0)
 
-            current_num_samples = 1
+            logger.info(
+                f"サンプル {generated_samples + 1}-{generated_samples + batch_size} の処理開始..."
+            )
 
             if config.save_batch_audio:
                 save_batch_audio(
@@ -607,7 +630,7 @@ def main() -> None:
                     start_seconds,
                     total_seconds,
                     condition_data,
-                    current_num_samples,
+                    batch_size,
                     condition_type,
                     config,
                     sample_offset=generated_samples,
@@ -621,7 +644,7 @@ def main() -> None:
                 start_seconds,
                 total_seconds,
                 condition_data,
-                current_num_samples,
+                batch_size,
                 config,
             )
 
@@ -629,7 +652,7 @@ def main() -> None:
                 model,
                 conditioning,
                 x.shape[-1],
-                current_num_samples,
+                batch_size,
                 config,
             )
 
@@ -639,14 +662,14 @@ def main() -> None:
                 start_seconds,
                 total_seconds,
                 condition_data,
-                current_num_samples,
+                batch_size,
                 condition_type,
                 config,
                 sample_offset=generated_samples,
                 chord_frame_rate=chord_frame_rate,
             )
 
-            generated_samples += 1
+            generated_samples += batch_size
 
         logger.info("生成したサンプル数: %d", generated_samples)
 
