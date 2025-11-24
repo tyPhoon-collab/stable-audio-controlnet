@@ -439,48 +439,74 @@ class CocoMullaChordConditioner(Conditioner):
         [root, quality_idx, bass_note] から 37/25次元のCoco-Mulla表現を構築。
 
         Args:
-            chords_data (torch.Tensor): (T_frames, 3)
+            chords_data (torch.Tensor): (T_frames, 3) or (batch_size, T_frames, 3)
                 [root, quality_idx, bass_note]
             device (torch.device): 処理デバイス
 
         Returns:
-            torch.Tensor: (T_frames, 37 or 25)
+            torch.Tensor: (T_frames, 37 or 25) or (batch_size, T_frames, 37 or 25)
         """
-        T_frames = chords_data.shape[0]
-        c = torch.zeros(T_frames, self.input_dim, device=device)
+        # バッチ次元の有無を確認
+        if len(chords_data.shape) == 2:
+            # (T_frames, 3) の場合、バッチ次元を追加
+            chords_data = chords_data.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+
+        batch_size, T_frames, _ = chords_data.shape
+        c = torch.zeros(batch_size, T_frames, self.input_dim, device=device)
 
         # 'no-chord' (root == -1) のフレームを特定
-        no_chord_mask = chords_data[:, 0] == -1
+        no_chord_mask = chords_data[:, :, 0] == -1  # (batch_size, T_frames)
         chord_mask = ~no_chord_mask
 
         # 1. No-Chord フレーム
-        if self.with_bass:
-            c[no_chord_mask, 36] = 1.0  # 最後の次元 (NoChord フラグ)
-        else:
-            c[no_chord_mask, 24] = 1.0  # 最後の次元 (NoChord フラグ)
+        no_chord_idx = 36 if self.with_bass else 24
+        c[no_chord_mask, no_chord_idx] = 1.0
 
         # 2. Chord フレーム
         if torch.any(chord_mask):
-            roots = chords_data[chord_mask, 0].long()
-            quality_idx = chords_data[chord_mask, 1].long()
-            bass_notes = chords_data[chord_mask, 2].long()
+            # 全データを一度にlong型に変換
+            roots = chords_data[:, :, 0].long()  # (batch_size, T_frames)
+            quality_idx = chords_data[:, :, 1].long()  # (batch_size, T_frames)
+            bass_notes = chords_data[:, :, 2].long()  # (batch_size, T_frames)
 
             # Root one-hot encoding (0-11)
-            c[chord_mask, 0:12] = F.one_hot(roots, num_classes=12).float()
+            # マスク部分は-1なので、clampして0-11の範囲にしてからone-hot化
+            roots_safe = roots.clamp(0, 11)
+            root_one_hot = F.one_hot(
+                roots_safe, num_classes=12
+            ).float()  # (batch_size, T_frames, 12)
+            # chord_maskの部分のみ適用
+            c[:, :, 0:12] = torch.where(
+                chord_mask.unsqueeze(-1), root_one_hot, c[:, :, 0:12]
+            )
 
             if self.with_bass:
                 # Bass one-hot encoding (12-23)
-                c[chord_mask, 12:24] = F.one_hot(bass_notes, num_classes=12).float()
+                bass_safe = bass_notes.clamp(0, 11)
+                bass_one_hot = F.one_hot(bass_safe, num_classes=12).float()
+                c[:, :, 12:24] = torch.where(
+                    chord_mask.unsqueeze(-1), bass_one_hot, c[:, :, 12:24]
+                )
 
                 # Chroma (24-35)
-                self._encode_chroma(c, chord_mask, roots, quality_idx, start_idx=24)
+                self._encode_chroma_batch(
+                    c, chord_mask, roots, quality_idx, start_idx=24
+                )
             else:
                 # Chroma (12-23)
-                self._encode_chroma(c, chord_mask, roots, quality_idx, start_idx=12)
+                self._encode_chroma_batch(
+                    c, chord_mask, roots, quality_idx, start_idx=12
+                )
+
+        if squeeze_output:
+            c = c.squeeze(0)
 
         return c
 
-    def _encode_chroma(
+    def _encode_chroma_batch(
         self,
         c: torch.Tensor,
         mask: torch.Tensor,
@@ -489,33 +515,46 @@ class CocoMullaChordConditioner(Conditioner):
         start_idx: int,
     ) -> None:
         """
-        Chroma情報をCoco-Mulla表現に追加。
+        Chroma情報をCoco-Mulla表現に追加（バッチ対応版）。
 
         Args:
-            c: 出力ベクトル
-            mask: Chordマスク
-            roots: ルート (0-11)
-            quality_idx: 質インデックス
-            start_idx: Chroamの開始インデックス (12 or 24)
+            c: 出力ベクトル (batch_size, T_frames, input_dim)
+            mask: Chordマスク (batch_size, T_frames)
+            roots: ルート (batch_size, T_frames)
+            quality_idx: 質インデックス (batch_size, T_frames)
+            start_idx: Chromaの開始インデックス (12 or 24)
         """
         # chord_quality_mapを同じデバイスに移動
         chord_quality_map = tp.cast(torch.Tensor, self.chord_quality_map).to(c.device)
-        base_chroma = chord_quality_map[quality_idx]
+
+        # quality_idxを安全な範囲にclamp
+        quality_idx_safe = quality_idx.clamp(0, NUM_CHORD_QUALITIES - 1)
+        base_chroma = chord_quality_map[quality_idx_safe]  # (batch_size, T_frames, 12)
 
         if self.rotate_chroma:
             # rootベースで回転
-            pitch_classes = torch.arange(12, device=c.device)
-            roll_indices = (pitch_classes.unsqueeze(0) - roots.unsqueeze(1)) % 12
-            rotated_chroma = torch.gather(base_chroma, 1, roll_indices)
-            c[mask, start_idx : start_idx + 12] = rotated_chroma
+            pitch_classes = torch.arange(12, device=c.device)  # (12,)
+            # (batch_size, T_frames, 12) の形状で計算
+            roll_indices = (
+                pitch_classes.unsqueeze(0).unsqueeze(0) - roots.unsqueeze(-1)
+            ) % 12
+            rotated_chroma = torch.gather(
+                base_chroma, 2, roll_indices
+            )  # (batch_size, T_frames, 12)
+            # maskの部分のみ適用
+            c[:, :, start_idx : start_idx + 12] = torch.where(
+                mask.unsqueeze(-1), rotated_chroma, c[:, :, start_idx : start_idx + 12]
+            )
         else:
             # 回転しない (絶対的なchroma)
-            c[mask, start_idx : start_idx + 12] = base_chroma
+            c[:, :, start_idx : start_idx + 12] = torch.where(
+                mask.unsqueeze(-1), base_chroma, c[:, :, start_idx : start_idx + 12]
+            )
 
     def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:
         """
         Args:
-            chords (dict): {"data": Tensor (T_frames, 3), "target_size": int}
+            chords (dict): {"data": Tensor (T_frames, 3) or (batch_size, T_frames, 3), "target_size": int}
             device: 処理デバイス
 
         Returns:
@@ -526,28 +565,41 @@ class CocoMullaChordConditioner(Conditioner):
         chords_data = chords[0]["data"].to(target_device)
         target_size = chords[0]["target_size"]
 
-        # 1. Coco-Mulla 表現にエンコード
+        # バッチ次元の有無を確認
+        if len(chords_data.shape) == 2:
+            # (T_frames, 3) の場合、バッチ次元を追加
+            chords_data = chords_data.unsqueeze(0)
+
+        batch_size, T_frames, _ = chords_data.shape
+
+        # 1. バッチ全体を一度にCoco-Mulla表現にエンコード（ループなし）
+        # (batch_size, T_frames, 3) -> (batch_size, T_frames, input_dim)
         x = self.encode_chords(chords_data, target_device)
 
-        # 2. embed_dim に射影
+        # 2. embed_dim に射影: (batch_size, T_frames, input_dim) -> (batch_size, T_frames, embed_dim)
         x = self.input_proj(x)
 
-        # 3. Conv1d + Interpolate 処理
-        x = x.transpose(0, 1).unsqueeze(0)  # (1, embed_dim, T_frames)
-        x = self.conv(x)  # (1, conv_channels, T_frames)
-        x = x.transpose(1, 2).squeeze(0)  # (T_frames, conv_channels)
+        # 3. Conv1d処理のため形状変換: (batch_size, T_frames, embed_dim) -> (batch_size, embed_dim, T_frames)
+        x = x.transpose(1, 2)
 
-        x = self.proj_out(x)  # (T_frames, output_dim)
-        x = x.transpose(0, 1)  # (output_dim, T_frames)
+        # 4. Conv1d + projection: (batch_size, embed_dim, T_frames) -> (batch_size, conv_channels, T_frames)
+        x = self.conv(x)
 
-        # 4. target_size にリサイズ
+        # 5. 形状変換とprojection: (batch_size, conv_channels, T_frames) -> (batch_size, T_frames, conv_channels)
+        x = x.transpose(1, 2)
+        x = self.proj_out(x)  # (batch_size, T_frames, output_dim)
+
+        # 6. 最終形状変換: (batch_size, T_frames, output_dim) -> (batch_size, output_dim, T_frames)
+        x = x.transpose(1, 2)
+
+        # 7. target_sizeにリサイズ: (batch_size, output_dim, T_frames) -> (batch_size, output_dim, target_size)
         x = F.interpolate(
-            x.unsqueeze(0),
+            x,
             size=target_size,
             mode="linear",
             align_corners=False,
         )
 
-        attention_mask = torch.ones(1, target_size, device=target_device)
+        attention_mask = torch.ones(batch_size, target_size, device=target_device)
 
         return x, attention_mask
