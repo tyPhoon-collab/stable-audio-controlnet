@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from stable_audio_tools.models.conditioners import Conditioner
 from torch import nn
 
+from main.chord_backbones import ChordBackbone, ChordConvBackbone
 from main.data.annotation import (
     NUM_CHORD_QUALITIES,
     QUALITY_CHROMA_INTERVALS,
@@ -132,242 +133,6 @@ class SeparatedEmbeddingChordConditioner(Conditioner):
         return x, attention_mask
 
 
-class RotatedChromaChordConditioner(Conditioner):
-    """
-    Coco-Mullaの 25次元 (Root 12 + Chroma 12 + NoChord 1) 表現を使用。
-    ただし、クロマ部分はルートに基づいて回転される。
-    入力: (T_frames, 3) [root, quality_idx, inversion]
-    """
-
-    def __init__(
-        self,
-        output_dim: int = 64,
-        embed_dim: int = 128,
-        conv_channels: int = 32,
-        conv_kernel_size: int = 7,
-        conv_padding: int = 3,
-    ):
-        super().__init__(conv_channels, output_dim)
-
-        # 25次元 (Root 12 + Chroma 12 + NoChord 1)
-        self.input_dim = 25
-
-        # 25次元ベクトルをembed_dimに射影する層
-        self.input_proj = nn.Linear(self.input_dim, embed_dim)
-
-        self.conv = nn.Conv1d(
-            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
-        )
-
-        # --- 和音構成音 (Chroma) のルックアップテーブルを作成 ---
-        quality_map_tensor = torch.zeros(NUM_CHORD_QUALITIES, 12)
-
-        for i, name in enumerate(QUALITY_NAMES):
-            intervals = QUALITY_CHROMA_INTERVALS.get(name)
-            if intervals:
-                # 構成音のインデックス (タプル) をリストに変換して設定
-                quality_map_tensor[i, list(intervals)] = 1.0
-
-        # モデルのバッファとして登録 (GPU対応)
-        self.register_buffer("chord_quality_map", quality_map_tensor.float())
-        # ----------------------------------------------------
-
-    def encode_chords(self, chords_data: torch.Tensor, device: torch.device):
-        """
-        [root, quality_idx, inversion] から 25次元のCoco-Mulla表現 (c_i) を構築。
-
-        Args:
-            chords_data (torch.Tensor): (T_frames, 3)
-                [root, quality_idx, inversion]
-                root: 0-11 (N/A=-1)
-                quality_idx: 0-13 (N/A=-1) (QUALITY_NAMESのインデックス)
-        Returns:
-            torch.Tensor: (T_frames, 25)
-        """
-        T_frames = chords_data.shape[0]
-        c = torch.zeros(T_frames, self.input_dim, device=device)
-
-        # 'no-chord' (root == -1) のフレームを特定
-        no_chord_mask = chords_data[:, 0] == -1
-        chord_mask = ~no_chord_mask
-
-        # 1. No-Chord フレーム (論文 Eq. 1 の 'otherwise' ケース)
-        c[no_chord_mask, 24] = 1.0  # no-chord フラグ (最後の次元) を立てる
-
-        # 2. Chord フレーム
-        if torch.any(chord_mask):
-            roots = chords_data[chord_mask, 0].long()
-            quality_idx = chords_data[chord_mask, 1].long()
-
-            # Root (0-11)
-            c[chord_mask, 0:12] = F.one_hot(roots, num_classes=12).float()
-
-            # Chroma (12-23)
-            # (rootを基準とした構成音)
-            chord_quality_map = tp.cast(torch.Tensor, self.chord_quality_map)
-            base_chroma = chord_quality_map[quality_idx]
-            pitch_classes = torch.arange(12, device=device)
-            roll_indices = (pitch_classes.unsqueeze(0) - roots.unsqueeze(1)) % 12
-            rotated_chroma = torch.gather(base_chroma, 1, roll_indices)
-            c[chord_mask, 12:24] = rotated_chroma
-
-        return c
-
-    def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:  # type: ignore[override]
-        """
-        chords (dict):
-            "data" (Tensor): (T_frames, 3) [root, quality_idx, inversion]
-            "target_size" (int): F.interpolate の目標フレーム数
-        """
-        # create_chord_tensor からの出力を想定
-        target_device = torch.device(device) if isinstance(device, str) else device
-
-        chords_data = chords[0]["data"].to(target_device)
-        target_size = chords[0]["target_size"]
-
-        # 1. Coco-Mulla 表現 (25-dim) にエンコード
-        # (T_frames, 25)
-        x = self.encode_chords(chords_data, target_device)
-
-        # 2. embed_dim に射影
-        # (T_frames, embed_dim)
-        x = self.input_proj(x)
-
-        # 3. Conv1d + Interpolate 処理 (元コードと同じ)
-        x = x.transpose(0, 1).unsqueeze(0)  # (1, embed_dim, T_frames)
-        x = self.conv(x)  # (1, conv_channels, T_frames)
-        x = x.transpose(1, 2).squeeze(0)  # (T_frames, conv_channels)
-
-        x = self.proj_out(x)  # (T_frames, output_dim)
-        x = x.transpose(0, 1)  # (output_dim, T_frames)
-
-        # 4. target_size にリサイズ
-        x = F.interpolate(
-            x.unsqueeze(0),
-            size=target_size,
-            mode="linear",
-            align_corners=False,
-        )  # (1, output_dim, target_size)
-
-        attention_mask = torch.ones(1, target_size, device=target_device)
-
-        return x, attention_mask
-
-
-class ChromaChordConditioner(Conditioner):
-    """
-    Coco-Mullaの 25次元 (Root 12 + Chroma 12 + NoChord 1) 表現を使用。
-    入力: (T_frames, 3) [root, quality_idx, inversion]
-    """
-
-    def __init__(
-        self,
-        output_dim: int = 64,
-        embed_dim: int = 128,
-        conv_channels: int = 32,
-        conv_kernel_size: int = 7,
-        conv_padding: int = 3,
-    ):
-        super().__init__(conv_channels, output_dim)
-
-        # 25次元 (Root 12 + Chroma 12 + NoChord 1)
-        self.input_dim = 25
-
-        # 25次元ベクトルをembed_dimに射影する層
-        self.input_proj = nn.Linear(self.input_dim, embed_dim)
-
-        self.conv = nn.Conv1d(
-            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
-        )
-
-        # --- 和音構成音 (Chroma) のルックアップテーブルを作成 ---
-        quality_map_tensor = torch.zeros(NUM_CHORD_QUALITIES, 12)
-
-        for i, name in enumerate(QUALITY_NAMES):
-            intervals = QUALITY_CHROMA_INTERVALS.get(name)
-            if intervals:
-                # 構成音のインデックス (タプル) をリストに変換して設定
-                quality_map_tensor[i, list(intervals)] = 1.0
-
-        # モデルのバッファとして登録 (GPU対応)
-        self.register_buffer("chord_quality_map", quality_map_tensor.float())
-        # ----------------------------------------------------
-
-    def encode_chords(self, chords_data: torch.Tensor, device: torch.device):
-        """
-        [root, quality_idx, inversion] から 25次元のCoco-Mulla表現 (c_i) を構築。
-
-        Args:
-            chords_data (torch.Tensor): (T_frames, 3)
-                [root, quality_idx, inversion]
-                root: 0-11 (N/A=-1)
-                quality_idx: 0-13 (N/A=-1) (QUALITY_NAMESのインデックス)
-        Returns:
-            torch.Tensor: (T_frames, 25)
-        """
-        T_frames = chords_data.shape[0]
-        c = torch.zeros(T_frames, self.input_dim, device=device)
-
-        # 'no-chord' (root == -1) のフレームを特定
-        no_chord_mask = chords_data[:, 0] == -1
-        chord_mask = ~no_chord_mask
-
-        # 1. No-Chord フレーム (論文 Eq. 1 の 'otherwise' ケース)
-        c[no_chord_mask, 24] = 1.0  # no-chord フラグ (最後の次元) を立てる
-
-        # 2. Chord フレーム
-        if torch.any(chord_mask):
-            roots = chords_data[chord_mask, 0].long()
-            quality_idx = chords_data[chord_mask, 1].long()
-
-            # Root (0-11)
-            c[chord_mask, 0:12] = F.one_hot(roots, num_classes=12).float()
-
-            # Chroma (12-23)
-            # (rootを基準とした構成音)
-            c[chord_mask, 12:24] = self.chord_quality_map[quality_idx]
-
-        return c
-
-    def forward(self, chords: tp.Any, device: tp.Union[torch.device, str]) -> tp.Any:
-        """
-        chords (dict):
-            "data" (Tensor): (T_frames, 3) [root, quality_idx, inversion]
-            "target_size" (int): F.interpolate の目標フレーム数
-        """
-        # create_chord_tensor からの出力を想定
-        chords_data = chords[0]["data"].to(device)
-        target_size = chords[0]["target_size"]
-
-        # 1. Coco-Mulla 表現 (25-dim) にエンコード
-        # (T_frames, 25)
-        x = self.encode_chords(chords_data, device)
-
-        # 2. embed_dim に射影
-        # (T_frames, embed_dim)
-        x = self.input_proj(x)
-
-        # 3. Conv1d + Interpolate 処理 (元コードと同じ)
-        x = x.transpose(0, 1).unsqueeze(0)  # (1, embed_dim, T_frames)
-        x = self.conv(x)  # (1, conv_channels, T_frames)
-        x = x.transpose(1, 2).squeeze(0)  # (T_frames, conv_channels)
-
-        x = self.proj_out(x)  # (T_frames, output_dim)
-        x = x.transpose(0, 1)  # (output_dim, T_frames)
-
-        # 4. target_size にリサイズ
-        x = F.interpolate(
-            x.unsqueeze(0),
-            size=target_size,
-            mode="linear",
-            align_corners=False,
-        )  # (1, output_dim, target_size)
-
-        attention_mask = torch.ones(1, target_size, device=device)
-
-        return x, attention_mask
-
-
 class CocoMullaChordConditioner(Conditioner):
     """
     柔軟な和音表現コンディショナー
@@ -383,25 +148,23 @@ class CocoMullaChordConditioner(Conditioner):
 
     パラメータ:
         output_dim: 最終出力次元 (デフォルト: 64)
-        embed_dim: 内部埋め込み次元 (デフォルト: 128)
-        conv_channels: Conv1d出力チャネル (デフォルト: 32)
-        conv_kernel_size: Conv1dカーネルサイズ (デフォルト: 7)
-        conv_padding: Conv1dパディング (デフォルト: 3)
+        internal_dim: Backboneの出力次元 (デフォルト: 32)
         with_bass: bass noteを含める (デフォルト: True)
         rotate_chroma: chromaをrootベースで回転させる (デフォルト: False)
+        backbone: 独自のバックボーンモジュール (指定された場合、デフォルトのConvBackboneの代わりに使用)
+                  backboneが指定される場合、その入力次元に応じて内部埋め込み次元が自動的に決定されます
     """
 
     def __init__(
         self,
         output_dim: int = 64,
+        internal_dim: int = 32,
         embed_dim: int = 128,
-        conv_channels: int = 32,
-        conv_kernel_size: int = 7,
-        conv_padding: int = 3,
         with_bass: bool = True,
         rotate_chroma: bool = False,
+        backbone: tp.Optional["ChordBackbone"] = None,
     ):
-        super().__init__(conv_channels, output_dim)
+        super().__init__(internal_dim, output_dim)
 
         self.with_bass = with_bass
         self.rotate_chroma = rotate_chroma
@@ -412,12 +175,17 @@ class CocoMullaChordConditioner(Conditioner):
         else:
             self.input_dim = 25  # Root 12 + Chroma 12 + NoChord 1
 
-        # 入力射影層
+        # 射影層: Coco-Mulla表現 -> embed_dim
         self.input_proj = nn.Linear(self.input_dim, embed_dim)
 
-        self.conv = nn.Conv1d(
-            embed_dim, conv_channels, kernel_size=conv_kernel_size, padding=conv_padding
-        )
+        # Backboneの設定（指定がない場合はデフォルトを生成）
+        if backbone is None:
+            # デフォルトはConvBackbone (kernel_size=7, padding=3)
+            backbone = ChordConvBackbone(
+                embed_dim, internal_dim, kernel_size=7, padding=3
+            )
+
+        self.backbone = backbone
 
         # --- 和音構成音 (Chroma) のルックアップテーブルを作成 ---
         quality_map_tensor = torch.zeros(NUM_CHORD_QUALITIES, 12)
@@ -576,23 +344,20 @@ class CocoMullaChordConditioner(Conditioner):
         # (batch_size, T_frames, 3) -> (batch_size, T_frames, input_dim)
         x = self.encode_chords(chords_data, target_device)
 
-        # 2. embed_dim に射影: (batch_size, T_frames, input_dim) -> (batch_size, T_frames, embed_dim)
+        # 2. 射影層で次元を揃える
+        # (batch_size, T_frames, input_dim) -> (batch_size, T_frames, embed_dim)
         x = self.input_proj(x)
 
-        # 3. Conv1d処理のため形状変換: (batch_size, T_frames, embed_dim) -> (batch_size, embed_dim, T_frames)
-        x = x.transpose(1, 2)
+        # 3. Backbone処理
+        # (batch_size, T_frames, embed_dim) -> (batch_size, T_frames, internal_dim)
+        x = self.backbone(x)
 
-        # 4. Conv1d + projection: (batch_size, embed_dim, T_frames) -> (batch_size, conv_channels, T_frames)
-        x = self.conv(x)
-
-        # 5. 形状変換とprojection: (batch_size, conv_channels, T_frames) -> (batch_size, T_frames, conv_channels)
-        x = x.transpose(1, 2)
         x = self.proj_out(x)  # (batch_size, T_frames, output_dim)
 
-        # 6. 最終形状変換: (batch_size, T_frames, output_dim) -> (batch_size, output_dim, T_frames)
+        # 3. 最終形状変換: (batch_size, T_frames, output_dim) -> (batch_size, output_dim, T_frames)
         x = x.transpose(1, 2)
 
-        # 7. target_sizeにリサイズ: (batch_size, output_dim, T_frames) -> (batch_size, output_dim, target_size)
+        # 4. target_sizeにリサイズ: (batch_size, output_dim, T_frames) -> (batch_size, output_dim, target_size)
         x = F.interpolate(
             x,
             size=target_size,
