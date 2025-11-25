@@ -157,6 +157,18 @@ def _load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
         cond_cfg["datamodule"]["batch_size_val"] = config.batch_size
         logger.info(f"DataLoaderのbatch_size_valを{config.batch_size}に設定しました")
 
+        # クラッシュ回避設定
+        # num_workers > 0 の場合、multiprocessing_context="spawn" などで
+        # "terminate called without an active exception" が発生することがあるため、
+        # 強制的にシングルプロセス実行とする
+        # 推論時は dataloader の並列化はあまり効果がないため問題ない
+        cond_cfg["datamodule"]["num_workers"] = 0
+        cond_cfg["datamodule"]["persistent_workers"] = False
+        cond_cfg["datamodule"]["multiprocessing_context"] = None
+        logger.info(
+            "クラッシュ回避のため、num_workers=0, persistent_workers=False, multiprocessing_context=None に設定しました"
+        )
+
     return model, cond_cfg
 
 

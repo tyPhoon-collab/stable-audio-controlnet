@@ -30,7 +30,7 @@ from main.data.annotation import (
     parse_chord_label,
     root_to_number,
 )
-from main.eval.chord_metrics import chord_match_flags_by_overlap
+from main.eval.metrics import chord_match_flags_by_overlap
 
 # ログ設定
 logging.basicConfig(

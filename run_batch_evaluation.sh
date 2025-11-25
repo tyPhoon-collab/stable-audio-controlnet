@@ -55,6 +55,15 @@ log_success() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S') SUCCESS]${NC} $1"
 log_error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S') ERROR]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S') WARNING]${NC} $1"; }
 
+notify_discord() {
+    local message="$1"
+    local msg_type="${2:-normal}"
+
+    if command -v python &> /dev/null; then
+        python -m scripts.notify_discord "$message" --type "$msg_type" 2>/dev/null || true
+    fi
+}
+
 show_help() {
     head -28 "$0" | tail -21
 }
@@ -82,12 +91,12 @@ run_audio_generation() {
         --batch-size "$BATCH_SIZE" \
         --output "$OUTPUT_DIR/generated"
 
-    if [ $? -eq 0 ]; then
-        log_success "音声生成が完了しました"
-    else
+    if [ $? -ne 0 ]; then
         log_error "音声生成に失敗しました"
+        notify_discord "❌ 音声生成フェーズでエラーが発生しました" "error"
         exit 1
     fi
+    log_success "音声生成が完了しました"
 
     echo ""
 }
@@ -112,12 +121,12 @@ run_chord_recognition() {
         --output_dir "/$OUTPUT_DIR/predicted" \
         --chord_dict "$CHORD_DICT"
 
-    if [ $? -eq 0 ]; then
-        log_success "和音推定が完了しました"
-    else
+    if [ $? -ne 0 ]; then
         log_error "和音推定に失敗しました"
+        notify_discord "❌ 和音推定フェーズでエラーが発生しました" "error"
         exit 1
     fi
+    log_success "和音推定が完了しました"
 
     echo ""
 }
@@ -146,10 +155,11 @@ run_evaluation() {
             --clap-model-path "$CLAP_MODEL_PATH" \
             --output "$OUTPUT_DIR/evaluation_results.json"
 
-        if [ $? -eq 0 ]; then
-            log_success "評価メトリクスが完了しました"
-        else
+        if [ $? -ne 0 ]; then
             log_error "評価メトリクスの計算に失敗しました"
+            notify_discord "❌ 評価メトリクス計算でエラーが発生しました" "error"
+        else
+            log_success "評価メトリクスが完了しました"
         fi
     fi
 
@@ -277,5 +287,8 @@ echo "  📁 生成音声: $OUTPUT_DIR/generated/"
 echo "  📁 推定ラベル: $OUTPUT_DIR/predicted/"
 echo "  📄 評価結果: $OUTPUT_DIR/evaluation_results.json"
 echo ""
+
+notify_discord "🎉 バッチ評価パイプラインが完了しました！" "success"
+
 log_success "処理完了！"
 exit 0

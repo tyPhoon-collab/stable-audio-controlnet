@@ -10,6 +10,7 @@ from stable_audio_tools.models.conditioners import Conditioner
 from torch.utils.data import DataLoader
 
 from main.controlnet.pretrained import get_pretrained_controlnet_model
+from main.notifier import get_notifier
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
 
 from .data.annotation import ChordAnnotation
@@ -296,6 +297,22 @@ class SampleLogger(Callback):
         if self.log_next:
             self.log_sample(trainer, pl_module, batch)
             self.log_next = False
+
+    def _send_message_to_discord(self, message: str) -> None:
+        """Discord にメッセージを送信"""
+        notifier = get_notifier()
+        if notifier:
+            notifier.send(message)
+
+    def on_exception(
+        self, trainer: Trainer, pl_module: pl.LightningModule, exception: BaseException
+    ) -> None:
+        message = f"訓練中にエラーが発生しました: {str(exception)}"
+        self._send_message_to_discord(message)
+
+    def on_train_end(self, trainer: Trainer, pl_module: pl.LightningModule) -> None:
+        message = "訓練が終了しました。"
+        self._send_message_to_discord(message)
 
     @torch.no_grad()
     def log_sample(self, trainer, pl_module, batch):
