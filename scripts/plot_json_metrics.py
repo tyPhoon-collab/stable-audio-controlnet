@@ -261,7 +261,9 @@ class MetricsVisualizer:
         ax.set_title("Metrics Comparison", fontsize=14, fontweight="bold")
         ax.set_xticks(x)
         ax.set_xticklabels(file_names, rotation=45, ha="right")
-        ax.legend(fontsize=11, loc="upper left")
+        ax.legend(
+            fontsize=11, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0
+        )
         ax.grid(True, axis="y", alpha=0.3, linestyle="--")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
@@ -289,8 +291,10 @@ def main():
         default=[
             "chord_metrics.overall_accuracy",
             "chord_metrics.overall_root_accuracy",
+            # "audio_metrics.fad_score",
+            # "clap_score",
         ],
-        help="Metric paths to plot (dot-separated, default: chord_metrics.overall_accuracy, chord_metrics.overall_root_accuracy)",
+        help="Metric paths to plot (dot-separated, default as above)",
     )
     parser.add_argument(
         "--mode",
