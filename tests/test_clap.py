@@ -9,7 +9,12 @@ os.chdir(Path(__file__).parent.parent)
 # Add the parent directory to the path to import from main
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from main.eval.clap import calculate_pair_similarity, initialize_clap_model
+from main.eval.clap import (
+    calculate_batch_similarity,
+    calculate_pair_similarity,
+    evaluate_clap_batch,
+    initialize_clap_model,
+)
 
 
 @pytest.fixture(scope="session")
@@ -108,3 +113,60 @@ def test_calculate_pair_similarity_fusion_with_dog_description(clap_model_fusion
     # Check that score is a float between -1 and 1
     assert isinstance(score, float), "Score should be a float"
     assert -1 <= score <= 1, f"Similarity score should be between -1 and 1, got {score}"
+
+
+def test_calculate_batch_similarity(clap_model):
+    """Test batch similarity calculation matches individual calculations."""
+    import librosa
+
+    audio_path = "data/Al James - Schoolboy Facination_no_vocals.mp3"
+    descriptions = [
+        "An upbeat track featuring acoustic guitars, rhythmic percussion, and bright piano, creating a lively and cheerful mood with a medium tempo.",
+        "The dog is barking.",
+    ]
+
+    # Load audio once
+    audio_data, _ = librosa.load(audio_path, sr=48000)
+
+    # Calculate batch similarity
+    batch_scores = calculate_batch_similarity(
+        clap_model,
+        [audio_data, audio_data],  # Same audio for both
+        descriptions,
+    )
+    print(f"\nBatch scores: {batch_scores}")
+
+    # Calculate individual similarity for comparison
+    score1 = calculate_pair_similarity(clap_model, audio_path, descriptions[0])
+    score2 = calculate_pair_similarity(clap_model, audio_path, descriptions[1])
+
+    # Batch scores should match individual scores
+    assert len(batch_scores) == 2, "Should have 2 batch scores"
+    assert abs(batch_scores[0] - score1) < 0.01, (
+        f"Batch score 0 should match individual: {batch_scores[0]} vs {score1}"
+    )
+    assert abs(batch_scores[1] - score2) < 0.01, (
+        f"Batch score 1 should match individual: {batch_scores[1]} vs {score2}"
+    )
+
+
+def test_evaluate_clap_batch(clap_model):
+    """Test batch evaluation function."""
+    audio_path = Path("data/Al James - Schoolboy Facination_no_vocals.mp3")
+    prompts = [
+        "An upbeat track featuring acoustic guitars, rhythmic percussion, and bright piano, creating a lively and cheerful mood with a medium tempo.",
+    ]
+
+    # Test batch evaluation
+    result = evaluate_clap_batch(
+        model=clap_model,
+        audio_paths=[audio_path],
+        prompts=prompts,
+        num_workers=2,
+    )
+    print(f"\nBatch evaluation result: {result}")
+
+    assert audio_path.name in result, f"Should have score for {audio_path.name}"
+    assert result[audio_path.name] > 0.3, (
+        "Score should be > 0.3 for matching description"
+    )

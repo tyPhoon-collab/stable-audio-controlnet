@@ -55,13 +55,25 @@ log_success() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S') SUCCESS]${NC} $1"
 log_error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S') ERROR]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S') WARNING]${NC} $1"; }
 
+format_duration() {
+    local seconds=$1
+    local hours=$((seconds / 3600))
+    local minutes=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+    if [ $hours -gt 0 ]; then
+        printf "%d時間%d分%d秒" $hours $minutes $secs
+    elif [ $minutes -gt 0 ]; then
+        printf "%d分%d秒" $minutes $secs
+    else
+        printf "%d秒" $secs
+    fi
+}
+
 notify_discord() {
     local message="$1"
     local msg_type="${2:-normal}"
 
-    if command -v python &> /dev/null; then
-        python -m scripts.notify_discord "$message" --type "$msg_type" 2>/dev/null || true
-    fi
+    docker exec "$MODEL_CONTAINER" python -m scripts.notify_discord "$message" --type "$msg_type" 2>/dev/null || true
 }
 
 show_help() {
@@ -74,6 +86,8 @@ run_audio_generation() {
     echo -e "${BLUE}1️⃣  音声生成フェーズ${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
     echo ""
+
+    local start_time=$(date +%s)
 
     # コンテナの実行確認
     if ! docker ps --filter name="$MODEL_CONTAINER" --filter status=running | grep -q "$MODEL_CONTAINER"; then
@@ -96,7 +110,10 @@ run_audio_generation() {
         notify_discord "❌ 音声生成フェーズでエラーが発生しました" "error"
         exit 1
     fi
-    log_success "音声生成が完了しました"
+
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    log_success "音声生成が完了しました（実行時間: $(format_duration $duration)）"
 
     echo ""
 }
@@ -106,6 +123,8 @@ run_chord_recognition() {
     echo -e "${BLUE}2️⃣  和音推定フェーズ${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
     echo ""
+
+    local start_time=$(date +%s)
 
     # コンテナの実行確認
     if ! docker ps --filter name="$ACR_CONTAINER" --filter status=running | grep -q "$ACR_CONTAINER"; then
@@ -126,7 +145,10 @@ run_chord_recognition() {
         notify_discord "❌ 和音推定フェーズでエラーが発生しました" "error"
         exit 1
     fi
-    log_success "和音推定が完了しました"
+
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    log_success "和音推定が完了しました（実行時間: $(format_duration $duration)）"
 
     echo ""
 }
@@ -136,6 +158,8 @@ run_evaluation() {
     echo -e "${BLUE}3️⃣  評価メトリクス計算フェーズ${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
     echo ""
+
+    local start_time=$(date +%s)
 
     log_info "評価メトリクスを計算中..."
 
@@ -159,7 +183,9 @@ run_evaluation() {
             log_error "評価メトリクスの計算に失敗しました"
             notify_discord "❌ 評価メトリクス計算でエラーが発生しました" "error"
         else
-            log_success "評価メトリクスが完了しました"
+            local end_time=$(date +%s)
+            local duration=$((end_time - start_time))
+            log_success "評価メトリクスが完了しました（実行時間: $(format_duration $duration)）"
         fi
     fi
 
@@ -229,6 +255,9 @@ fi
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 OUTPUT_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
 
+# パイプライン全体の開始時刻
+PIPELINE_START_TIME=$(date +%s)
+
 # メイン処理開始
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -282,13 +311,18 @@ echo -e "${GREEN}║             ✅ 評価パイプラインが完了しまし�
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+PIPELINE_END_TIME=$(date +%s)
+PIPELINE_DURATION=$((PIPELINE_END_TIME - PIPELINE_START_TIME))
+
 echo -e "${BLUE}📊 結果ファイル一覧:${NC}"
 echo "  📁 生成音声: $OUTPUT_DIR/generated/"
 echo "  📁 推定ラベル: $OUTPUT_DIR/predicted/"
 echo "  📄 評価結果: $OUTPUT_DIR/evaluation_results.json"
 echo ""
+echo -e "${BLUE}⏱️  合計実行時間: $(format_duration $PIPELINE_DURATION)${NC}"
+echo ""
 
-notify_discord "🎉 バッチ評価パイプラインが完了しました！" "success"
+notify_discord "🎉 バッチ評価パイプラインが完了しました！（合計: $(format_duration $PIPELINE_DURATION)）" "success"
 
 log_success "処理完了！"
 exit 0

@@ -1,4 +1,6 @@
 import functools
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import laion_clap
 import librosa
@@ -43,6 +45,45 @@ def initialize_clap_model(
     return model
 
 
+def _load_audio(audio_path: str | Path, sr: int = 48000) -> np.ndarray | None:
+    """音声ファイルを読み込む（並列化用）"""
+    try:
+        audio_data, _ = librosa.load(str(audio_path), sr=sr)
+        return audio_data
+    except Exception:
+        return None
+
+
+def _prepare_audio_tensor(
+    audio_data: np.ndarray,
+    enable_fusion: bool,
+    use_segment_averaging: bool,
+    sr: int = 48000,
+) -> np.ndarray:
+    """音声データをモデル入力用のテンソルに変換"""
+    if enable_fusion:
+        return audio_data.reshape(1, -1)
+
+    if use_segment_averaging:
+        chunk_samples = sr * 10  # 10秒
+        total_samples = len(audio_data)
+        chunks = []
+
+        for start in range(0, total_samples, chunk_samples):
+            end = start + chunk_samples
+            chunk = audio_data[start:end]
+            if len(chunk) < chunk_samples:
+                chunk = np.pad(chunk, (0, chunk_samples - len(chunk)), "constant")
+            chunks.append(chunk)
+
+        if not chunks:
+            return np.zeros((1, chunk_samples))
+
+        return np.array(chunks)
+
+    return audio_data.reshape(1, -1)
+
+
 def calculate_pair_similarity(
     model: laion_clap.CLAP_Module,
     audio_input: str | np.ndarray,
@@ -68,29 +109,9 @@ def calculate_pair_similarity(
         audio_data = audio_input
 
     # 2. オーディオ入力テンソルの準備
-    if model.enable_fusion:
-        # (1, Time)
-        audio_input_tensor = audio_data.reshape(1, -1)
-    elif use_segment_averaging:
-        CHUNK_SAMPLES = SR * 10  # 10秒
-        total_samples = len(audio_data)
-        chunks = []
-
-        # バッチ作成ループ
-        for start in range(0, total_samples, CHUNK_SAMPLES):
-            end = start + CHUNK_SAMPLES
-            chunk = audio_data[start:end]
-            # パディングして長さを揃える
-            if len(chunk) < CHUNK_SAMPLES:
-                chunk = np.pad(chunk, (0, CHUNK_SAMPLES - len(chunk)), "constant")
-            chunks.append(chunk)
-
-        if not chunks:
-            return 0.0
-
-        audio_input_tensor = np.array(chunks)  # (Batch, 480000)
-    else:
-        audio_input_tensor = audio_data.reshape(1, -1)
+    audio_input_tensor = _prepare_audio_tensor(
+        audio_data, model.enable_fusion, use_segment_averaging, SR
+    )
 
     # 3. 埋め込みの取得（全ケースで共通）
     with torch.no_grad():
@@ -116,6 +137,131 @@ def calculate_pair_similarity(
     similarity = (text_tensor @ audio_tensor.T).item()
 
     return similarity
+
+
+def calculate_batch_similarity(
+    model: laion_clap.CLAP_Module,
+    audio_data_list: list[np.ndarray],
+    texts: list[str],
+    device: str = "cuda",
+    use_segment_averaging: bool = True,
+) -> list[float]:
+    """
+    複数の音声とテキストのペアでコサイン類似度をバッチ計算します。
+
+    Args:
+        model: CLAPモデル
+        audio_data_list: 音声データのリスト（既に読み込み済み）
+        texts: テキストのリスト
+        device: デバイス
+        use_segment_averaging: チャンク化して平均をとるか
+
+    Returns:
+        類似度のリスト
+    """
+    if len(audio_data_list) != len(texts):
+        raise ValueError("audio_data_list と texts の長さが一致しません")
+
+    if not audio_data_list:
+        return []
+
+    SR = 48000
+
+    # テキストembeddingをバッチで取得
+    with torch.no_grad():
+        text_embed_np = model.get_text_embedding(texts)
+        text_tensor = torch.from_numpy(text_embed_np).to(device)
+        text_tensor = text_tensor / text_tensor.norm(dim=-1, keepdim=True)
+
+    # 音声embeddingを個別に取得（チャンク処理があるため）
+    similarities: list[float] = []
+
+    for i, audio_data in enumerate(audio_data_list):
+        audio_input_tensor = _prepare_audio_tensor(
+            audio_data, model.enable_fusion, use_segment_averaging, SR
+        )
+
+        with torch.no_grad():
+            audio_embed_np = model.get_audio_embedding_from_data(
+                x=audio_input_tensor, use_tensor=False
+            )
+            audio_tensor = torch.from_numpy(audio_embed_np).to(device)
+
+            # 平均化 (Mean Pooling)
+            if (
+                use_segment_averaging
+                and not model.enable_fusion
+                and audio_tensor.shape[0] > 1
+            ):
+                audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+
+            audio_tensor = audio_tensor / audio_tensor.norm(dim=-1, keepdim=True)
+
+            # 対応するテキストとの類似度を計算
+            similarity = (text_tensor[i : i + 1] @ audio_tensor.T).item()
+            similarities.append(similarity)
+
+    return similarities
+
+
+def evaluate_clap_batch(
+    model: laion_clap.CLAP_Module,
+    audio_paths: list[Path],
+    prompts: list[str],
+    device: str = "cuda",
+    num_workers: int = 4,
+    use_segment_averaging: bool = True,
+) -> dict[str, float]:
+    """
+    複数の音声ファイルとプロンプトのCLAPスコアをバッチ計算します。
+
+    Args:
+        model: 事前ロード済みCLAPモデル
+        audio_paths: 音声ファイルパスのリスト
+        prompts: 対応するプロンプトのリスト
+        device: デバイス
+        num_workers: 音声読み込みの並列数
+        use_segment_averaging: チャンク化して平均をとるか
+
+    Returns:
+        ファイル名 -> スコア の辞書
+    """
+    if len(audio_paths) != len(prompts):
+        raise ValueError("audio_paths と prompts の長さが一致しません")
+
+    if not audio_paths:
+        return {}
+
+    # 音声ファイルを並列で読み込み
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        audio_data_list = list(executor.map(_load_audio, audio_paths))
+
+    # 有効なデータのみフィルタリング
+    valid_indices: list[int] = []
+    valid_audio_data: list[np.ndarray] = []
+    valid_prompts: list[str] = []
+
+    for i, audio_data in enumerate(audio_data_list):
+        if audio_data is not None:
+            valid_indices.append(i)
+            valid_audio_data.append(audio_data)
+            valid_prompts.append(prompts[i])
+
+    # バッチで類似度計算
+    similarities = calculate_batch_similarity(
+        model=model,
+        audio_data_list=valid_audio_data,
+        texts=valid_prompts,
+        device=device,
+        use_segment_averaging=use_segment_averaging,
+    )
+
+    # 結果を辞書に格納
+    result: dict[str, float] = {}
+    for idx, sim in zip(valid_indices, similarities):
+        result[audio_paths[idx].name] = sim
+
+    return result
 
 
 if __name__ == "__main__":

@@ -16,3 +16,42 @@ Pythonコンテナ内で質問しているので、Pythonコマンドをいつ�
 - 新しいパッケージをインストールしようとしないでください
 - 必要なパッケージはrequirements.txtに追加してください
 - 実行環境の詳細は`Dockerfile`を参照してください
+
+## 重要事項
+
+ISMIR2019-Large-Vocabulary-Chord-Recognitionディレクトリだけ、別のPython環境で動作する想定です。
+`ISMIR2019-Large-Vocabulary-Chord-Recognition/Dockerfile`にあるように、Python 3.8で動作します。
+
+## プロジェクトコンテキスト
+
+和音系列を音楽生成に組み込むための研究プロジェクトです。
+Stable Audio Openをベースモデルとして、DiT ControlNetの手法で和音系列を条件として与えています。
+現状は精度が出ていません。精度向上のために、様々なアプローチを試しています。
+
+### データセット
+
+訓練データはMUSDB18HQを使用していて、dataフォルダに配置されています。
+
+和音のアノテーションはISMIR2019-Large-Vocabulary-Chord-Recognitionを用いて算出しています。
+
+### 評価指標
+
+- フレームベースの正解率、根音正解率
+- FAD
+- CLAP
+
+`data/mixtures`を参照音源としてFADを計算します。
+
+### 検証プロセス
+
+```bash
+# コンテナ上で訓練
+PYTHONUNBUFFERED=1 TAG=musdb-controlnet-chord python train.py exp=train_musdb_controlnet_chord
+
+# ホスト上（Pythonなしの環境）で最適なチェックポイントを使って評価
+bash run_batch_evaluation.sh \
+  --ckpt "logs/ckpts/best.ckpt" \
+  --config train_musdb_controlnet_chord \
+  --samples 100 \
+  --batch-size 32
+```
