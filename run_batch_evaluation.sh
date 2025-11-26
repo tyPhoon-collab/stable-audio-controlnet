@@ -29,8 +29,9 @@
 #
 ###############################################################################
 
-MODEL_CONTAINER="stable-audio-controlnet-stable-audio-controlnet-1"
-ACR_CONTAINER="ismir2019-large-vocabulary-chord-recognition-acr-1"
+# 共通ユーティリティを読み込み
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/scripts/bash_utils.sh"
 
 CONFIG="train_musdb_controlnet_chord"
 SAMPLES=5
@@ -43,57 +44,18 @@ CKPT=""
 
 set -e
 
-# カラー定義
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-log_info() { echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S') INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S') SUCCESS]${NC} $1"; }
-log_error() { echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S') ERROR]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S') WARNING]${NC} $1"; }
-
-format_duration() {
-    local seconds=$1
-    local hours=$((seconds / 3600))
-    local minutes=$(((seconds % 3600) / 60))
-    local secs=$((seconds % 60))
-    if [ $hours -gt 0 ]; then
-        printf "%d時間%d分%d秒" $hours $minutes $secs
-    elif [ $minutes -gt 0 ]; then
-        printf "%d分%d秒" $minutes $secs
-    else
-        printf "%d秒" $secs
-    fi
-}
-
-notify_discord() {
-    local message="$1"
-    local msg_type="${2:-normal}"
-
-    docker exec "$MODEL_CONTAINER" python -m scripts.notify_discord "$message" --type "$msg_type" 2>/dev/null || true
-}
-
 show_help() {
     head -28 "$0" | tail -21
 }
 
 # フェーズ関数
 run_audio_generation() {
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}1️⃣  音声生成フェーズ${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo ""
+    print_header "1️⃣  音声生成フェーズ"
 
     local start_time=$(date +%s)
 
     # コンテナの実行確認
-    if ! docker ps --filter name="$MODEL_CONTAINER" --filter status=running | grep -q "$MODEL_CONTAINER"; then
-        log_error "音声生成コンテナが実行中ではありません: $MODEL_CONTAINER"
-        exit 1
-    fi
+    check_container_running "$MODEL_CONTAINER" "音声生成コンテナ" || exit 1
 
     log_info "音声生成を開始します..."
     log_info "実行: docker exec -it $MODEL_CONTAINER python eval_batch.py ..."
@@ -119,18 +81,12 @@ run_audio_generation() {
 }
 
 run_chord_recognition() {
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}2️⃣  和音推定フェーズ${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo ""
+    print_header "2️⃣  和音推定フェーズ"
 
     local start_time=$(date +%s)
 
     # コンテナの実行確認
-    if ! docker ps --filter name="$ACR_CONTAINER" --filter status=running | grep -q "$ACR_CONTAINER"; then
-        log_error "和音推定コンテナが実行中ではありません: $ACR_CONTAINER"
-        exit 1
-    fi
+    check_container_running "$ACR_CONTAINER" "和音推定コンテナ" || exit 1
 
     log_info "和音推定を開始します..."
     log_info "実行: docker exec -it $ACR_CONTAINER python batch_chord_recognition.py ..."
@@ -154,10 +110,7 @@ run_chord_recognition() {
 }
 
 run_evaluation() {
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}3️⃣  評価メトリクス計算フェーズ${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-    echo ""
+    print_header "3️⃣  評価メトリクス計算フェーズ"
 
     local start_time=$(date +%s)
 
@@ -246,6 +199,12 @@ if [ -z "$CKPT" ]; then
     exit 1
 fi
 
+# コンテナ内パス(/app/...)をホストパスに変換
+if [[ "$CKPT" == /app/* ]]; then
+    CKPT="${CKPT#/app/}"
+    log_info "チェックポイントパスを変換しました: $CKPT"
+fi
+
 if [ ! -f "$CKPT" ]; then
     log_error "チェックポイントファイルが存在しません: $CKPT"
     exit 1
@@ -260,10 +219,7 @@ PIPELINE_START_TIME=$(date +%s)
 
 # メイン処理開始
 echo ""
-echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       和音推定を含むバッチ評価（ホスト側実行版）             ║${NC}"
-echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
+print_box_header "       和音推定を含むバッチ評価（ホスト側実行版）             "
 
 # 設定情報を表示
 echo -e "${BLUE}=== 設定情報 ===${NC}"
@@ -306,10 +262,7 @@ run_evaluation
 # 完了
 ###############################################################################
 
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║             ✅ 評価パイプラインが完了しました！             ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
+print_success_box "             ✅ 評価パイプラインが完了しました！             "
 
 PIPELINE_END_TIME=$(date +%s)
 PIPELINE_DURATION=$((PIPELINE_END_TIME - PIPELINE_START_TIME))
