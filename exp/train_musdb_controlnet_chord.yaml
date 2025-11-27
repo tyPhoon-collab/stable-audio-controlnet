@@ -7,6 +7,12 @@ chord_frame_rate: 21.533203125
 
 log_every_n_steps: 200
 
+# データ拡張パラメータ
+augmentation:
+  pitch_shift_p: 1.0  # ピッチシフトの適用確率 (0.0-1.0)
+  gain_augment_p: 1.0  # ゲイン拡張の適用確率 (0.0-1.0)
+  drop_vocals: True
+
 model:
   _target_: main.module_controlnet_chord.Model
   lr: 5e-6
@@ -17,6 +23,17 @@ model:
   cfg_dropout_prob: 0.1
   depth_factor: 0.5
   chord_frame_rate: ${chord_frame_rate}
+  train_transform:
+    _target_: main.data.transforms.create_chord_training_transform
+    csv_path: "/app/data/description.csv"
+    drop_vocals: ${augmentation.drop_vocals}
+    pitch_shift_p: ${augmentation.pitch_shift_p}
+    gain_augment_p: ${augmentation.gain_augment_p}
+    sample_rate: ${sample_rate}
+  eval_transform:
+    _target_: main.data.transforms.create_chord_eval_transform
+    csv_path: "/app/data/description.csv"
+    drop_vocals: ${augmentation.drop_vocals}
   chord_conditioner:
     # _target_: main.chord_conditioner.EmbeddingChordConditioner
     # _target_: main.chord_conditioner.SeparatedEmbeddingChordConditioner
@@ -71,17 +88,11 @@ datamodule:
     shardshuffle: False
 
   shuffle_size: 24
-  batch_size_train: 16
-  batch_size_val: 16
+  batch_size_train: 8
+  batch_size_val: 8
   collate_fn:
-    # _target_: main.data.dataset_musdb_chord.collate_fn_genre
-    # _target_: main.data.dataset_musdb_chord.collate_fn_music_prompt
-    # _partial_: True
-    # csv_path: "/app/data/tracklist.csv"
-    _target_: main.data.dataset_musdb_chord.collate_fn_description
+    _target_: main.data.dataset_musdb_chord.collate_fn_stems
     _partial_: True
-    csv_path: "/app/data/description.csv"
-    drop_vocals: True
   drop_last: True
   num_workers: 1
   pin_memory: True
@@ -129,9 +140,9 @@ trainer:
   precision: 16 # Precision used for tensors, default `32`
   accelerator: gpu # `ddp` GPUs train individually and sync gradients, default `None`
   gradient_clip_val: 1.0
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 2
   min_epochs: 0
-  max_epochs: 30
+  max_epochs: 60
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null

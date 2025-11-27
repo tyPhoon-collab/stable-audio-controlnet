@@ -14,6 +14,8 @@ from main.notifier import get_notifier
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
 
 from .data.annotation import ChordAnnotation
+from .data.batch import AudioBatch
+from .data.transforms import BatchTransform, Identity
 
 # ================================================================================================
 # MODEL
@@ -25,6 +27,10 @@ class Model(pl.LightningModule):
 
     Supports multiple chord representation strategies through pluggable ChordRepresentation classes.
     Memory-optimized for 24GB VRAM training.
+
+    バッチ形式:
+        - AudioBatch: 新形式（推奨）。stemsをそのまま保持し、Transformで処理
+        - tuple: 従来形式。5-tuple (mix) または 6-tuple (conditional)
     """
 
     def __init__(
@@ -40,6 +46,9 @@ class Model(pl.LightningModule):
         depth_factor: float,
         cfg_dropout_prob: float,
         chord_frame_rate: float,
+        # Transform parameters
+        train_transform: BatchTransform | None = None,
+        eval_transform: BatchTransform | None = None,
     ):
         super().__init__()
 
@@ -82,6 +91,10 @@ class Model(pl.LightningModule):
         self.model.pretransform.requires_grad_(False)
         self.model.pretransform.eval()
 
+        # === Transform Configuration ===
+        self.train_transform = train_transform or Identity()
+        self.eval_transform = eval_transform or Identity()
+
         self.save_hyperparameters(
             {
                 "lr": lr,
@@ -111,14 +124,47 @@ class Model(pl.LightningModule):
         )
         return optimizer
 
-    def step(self, batch):
-        # Support both collate variants: mix (5-tuple) and conditional (6-tuple)
-        if len(batch) == 5:
-            x, prompts, start_seconds, total_seconds, chord_batch = batch
-        elif len(batch) == 6:
-            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+    def _parse_batch(
+        self, batch: AudioBatch | tuple
+    ) -> tuple[torch.Tensor, list[str], list[float], list[float], torch.Tensor]:
+        """バッチを統一形式にパース
+
+        AudioBatch形式と従来のタプル形式の両方をサポート。
+
+        Returns:
+            (audio, prompts, start_seconds, total_seconds, chord_batch)
+        """
+        if isinstance(batch, AudioBatch):
+            # 新形式: Transformを適用
+            transform = self.train_transform if self.training else self.eval_transform
+            batch = transform(batch)
+
+            if batch.audio is None:
+                raise ValueError(
+                    "AudioBatch.audio is None. StemMixTransform must be applied."
+                )
+
+            return (
+                batch.audio,
+                batch.prompts,
+                batch.start_seconds,
+                batch.total_seconds,
+                batch.chord,
+            )
+        elif isinstance(batch, tuple):
+            # 従来形式: 5-tuple (mix) または 6-tuple (conditional)
+            if len(batch) == 5:
+                x, prompts, start_seconds, total_seconds, chord_batch = batch
+            elif len(batch) == 6:
+                x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+            else:
+                raise ValueError("Unexpected batch format for chord training")
+            return x, prompts, start_seconds, total_seconds, chord_batch
         else:
-            raise ValueError("Unexpected batch format for chord training")
+            raise TypeError(f"Unexpected batch type: {type(batch)}")
+
+    def step(self, batch):
+        x, prompts, start_seconds, total_seconds, chord_batch = self._parse_batch(batch)
 
         diffusion_input = self.model.pretransform.encode(x)
 
@@ -320,11 +366,11 @@ class SampleLogger(Callback):
         if is_train:
             pl_module.eval()
         wandb_logger = get_wandb_logger(trainer).experiment
-        # batch may be 5-tuple (mix) or 6-tuple (conditional)
-        if len(batch) == 5:
-            x, prompts, start_seconds, total_seconds, chord_batch = batch
-        else:
-            x, _y_in, prompts, start_seconds, total_seconds, chord_batch = batch
+
+        # バッチをパース（AudioBatch形式と従来形式の両方をサポート）
+        x, prompts, start_seconds, total_seconds, chord_batch = pl_module._parse_batch(
+            batch
+        )
         x = torch.clip(x, -1, 1)
 
         num_samples = min(self.num_samples, x.shape[0])

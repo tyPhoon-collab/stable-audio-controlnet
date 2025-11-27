@@ -9,6 +9,7 @@ from torchaudio.functional import resample
 from webdataset.autodecode import torch_audio
 
 from .annotation import ChordAnnotation
+from .batch import AudioBatch
 from .common_mapping import DescriptionMapping, GenreMapping
 
 
@@ -298,6 +299,44 @@ def collate_fn_mix(
 
     chord_batch = torch.stack(chord_chunks)
     return (torch.concat(outputs), prompts, start_seconds, total_seconds, chord_batch)
+
+
+def collate_fn_stems(samples) -> AudioBatch:
+    """ステムをそのまま保持するcollate関数
+
+    ミックスせずにステムをそのまま返す。
+    後続のTransformパイプラインでミックスやデータ拡張を行う。
+
+    Args:
+        samples: _get_slices から yield される
+            (chunks, chord_chunk, start_s, total_s, sample_key) のリスト
+
+    Returns:
+        AudioBatch: ステムをそのまま保持したバッチ
+    """
+    stems_list = []
+    chord_chunks = []
+    start_seconds = []
+    total_seconds = []
+    sample_keys = []
+
+    for chunks, chord_chunk, start_s, total_s, sample_key in samples:
+        stems_list.append(chunks)
+        chord_chunks.append(chord_chunk)
+        start_seconds.append(start_s)
+        total_seconds.append(total_s)
+        sample_keys.append(sample_key)
+
+    chord_batch = torch.stack(chord_chunks) if chord_chunks else None
+
+    return AudioBatch(
+        stems=stems_list,
+        sample_keys=sample_keys,
+        start_seconds=start_seconds,
+        total_seconds=total_seconds,
+        prompts=[""] * len(stems_list),  # 後でTransformで設定
+        chord=chord_batch,
+    )
 
 
 MUSIC_PROMPT_CHOICES = ["melodic music", "catchy song", "a song", "music tracks"]

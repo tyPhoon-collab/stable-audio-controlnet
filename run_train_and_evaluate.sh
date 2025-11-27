@@ -42,6 +42,7 @@ BATCH_SIZE=32
 OUTPUT_DIR="out"
 SKIP_EVAL=false
 CKPT=""
+BEST_CKPT=""
 
 set -e
 
@@ -79,12 +80,12 @@ run_training() {
     fi
 
     # 訓練ログから最適なチェックポイントパスを抽出
-    BEST_CKPT=$(docker exec "$MODEL_CONTAINER" grep -oP "Best model ckpt at \K.*" /tmp/train_output.log | tail -1)
+    BEST_CKPT=$(docker exec "$MODEL_CONTAINER" grep -oP "Best model ckpt at \K.*" /tmp/train_output.log | tail -1 | tr -d '\r')
 
     if [ -z "$BEST_CKPT" ]; then
         log_warning "ベストチェックポイントパスを取得できませんでした"
         # last.ckptを探す
-        BEST_CKPT=$(docker exec "$MODEL_CONTAINER" find /app/logs/ckpts -name "last.ckpt" -path "*${TAG}*" -type f 2>/dev/null | sort | tail -1)
+        BEST_CKPT=$(docker exec "$MODEL_CONTAINER" find /app/logs/ckpts -name "last.ckpt" -path "*${TAG}*" -type f 2>/dev/null | sort | tail -1 | tr -d '\r')
     fi
 
     if [ -z "$BEST_CKPT" ]; then

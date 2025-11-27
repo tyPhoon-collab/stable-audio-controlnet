@@ -18,6 +18,8 @@ from eval_utils import (
     set_global_seed,
     tensor_to_float,
 )
+from main.data.batch import AudioBatch
+from main.data.transforms import create_chord_eval_transform
 from main.module_controlnet_chord import Model
 
 # ロガー設定
@@ -579,6 +581,21 @@ def main() -> None:
 
         logger.info(f"DataLoaderのバッチサイズ: {val_dataloader.batch_size}")
 
+        # eval用のTransformを作成（モデルにeval_transformがあればそれを使う、なければ作成）
+        if hasattr(model, "eval_transform") and model.eval_transform is not None:
+            eval_transform = model.eval_transform
+            logger.info("モデルのeval_transformを使用")
+        else:
+            # 設定からCSVパスを取得（存在すれば）
+            csv_path = None
+            if "model" in cond_cfg and "eval_transform" in cond_cfg["model"]:
+                csv_path = cond_cfg["model"]["eval_transform"].get("csv_path")
+            eval_transform = create_chord_eval_transform(
+                csv_path=csv_path,
+                drop_vocals=True,
+            )
+            logger.info("新規eval_transformを作成")
+
         dataloader_iter = iter(val_dataloader)
         generated_samples = 0
 
@@ -589,12 +606,31 @@ def main() -> None:
             ):
                 break
 
-            if len(batch) != 5:
-                raise ValueError(
-                    f"Unexpected batch format with {len(batch)} elements (期待値: 5)"
-                )
+            # AudioBatch形式と従来のタプル形式の両方をサポート
+            if isinstance(batch, AudioBatch):
+                # 新形式: AudioBatch
+                batch = eval_transform(batch)
+                if batch.audio is None:
+                    raise ValueError(
+                        "AudioBatch.audio is None. StemMixTransform must be applied."
+                    )
+                x = batch.audio
+                prompts = batch.prompts
+                start_seconds = batch.start_seconds
+                total_seconds = batch.total_seconds
+                condition_data = batch.chord
+                if condition_data is None:
+                    raise ValueError("AudioBatch.chord is None for chord model.")
+            elif isinstance(batch, tuple):
+                # 従来形式: タプル
+                if len(batch) != 5:
+                    raise ValueError(
+                        f"Unexpected batch format with {len(batch)} elements (期待値: 5)"
+                    )
+                x, prompts, start_seconds, total_seconds, condition_data = batch
+            else:
+                raise TypeError(f"Unexpected batch type: {type(batch)}")
 
-            x, prompts, start_seconds, total_seconds, condition_data = batch
             x = torch.clip(x, -1, 1)
 
             # バッチサイズを取得
