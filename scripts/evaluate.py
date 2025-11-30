@@ -337,16 +337,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Results written to {args.output}")
 
-    overall_metrics = result["overall_metrics"]
-    print("Chord Accuracy: {:.2f}%".format(overall_metrics["chord_accuracy"] * 100))
-    print(
-        "Chord Root Accuracy: {:.2f}%".format(
-            overall_metrics["chord_root_accuracy"] * 100
-        )
-    )
-    print("FAD Score: {:.4f}".format(overall_metrics["fad_score"]))
-    print("CLAP Score: {:.4f}".format(overall_metrics["clap_score"]))
-
     return 0
 
 

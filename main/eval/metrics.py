@@ -98,7 +98,8 @@ def frame_accuracy(
     matches = 0
     skipped = 0
     for pred, ref in zip(predictions, references):
-        if ignore_label is not None and ref == ignore_label:
+        # 参照値または予測値がignore_labelの場合はスキップ
+        if ignore_label is not None and (ref == ignore_label or pred == ignore_label):
             skipped += 1
             continue
         total += 1
@@ -117,7 +118,8 @@ def frame_root_accuracy(
     matches = 0
     skipped = 0
     for pred, ref in zip(predictions, references):
-        if ignore_label is not None and ref == ignore_label:
+        # 参照値または予測値がignore_labelの場合はスキップ
+        if ignore_label is not None and (ref == ignore_label or pred == ignore_label):
             skipped += 1
             continue
         total += 1
