@@ -255,3 +255,69 @@ class ChordGRUBackbone(ChordBackbone):
         x, _ = self.gru(x)
         x = self.proj(x)
         return x
+
+
+class ChordMambaBackbone(ChordBackbone):
+    """
+    Mamba (State Space Model) を用いたバックボーン。
+    線形計算量で長距離の依存関係を効率的に学習する。
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 128,
+        output_dim: int = 32,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+    ):
+        super().__init__()
+        try:
+            from mamba_ssm import Mamba
+        except ImportError:
+            raise ImportError(
+                "mamba_ssm is not installed. Please install it via `pip install mamba-ssm`."
+            )
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
+        # 入力射影
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+
+        # Mamba Layers
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            self.layers.append(
+                nn.Sequential(
+                    Mamba(
+                        d_model=hidden_dim,
+                        d_state=d_state,
+                        d_conv=d_conv,
+                        expand=expand,
+                    ),
+                    nn.LayerNorm(hidden_dim),
+                )
+            )
+
+        # 出力射影
+        self.output_proj = nn.Linear(hidden_dim, output_dim)
+
+    def get_input_dim(self) -> int:
+        return self.input_dim
+
+    def get_output_dim(self) -> int:
+        return self.output_dim
+
+    def forward(self, x):
+        # x: (batch, T, input_dim)
+        x = self.input_proj(x)
+
+        for layer in self.layers:
+            # Residual connection
+            x = x + layer(x)
+
+        x = self.output_proj(x)
+        return x

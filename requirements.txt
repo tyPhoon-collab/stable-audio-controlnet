@@ -1,9 +1,10 @@
 dotenv
 
 jupyter
-torch
-torchvision
-torchaudio
+# Install by Dockerfile
+# torch
+# torchvision
+# torchaudio
 stable_audio_tools==0.0.16
 einops
 datasets[audio]
@@ -11,7 +12,8 @@ yt-dlp
 gradio
 hydra-core
 hydra-colorlog
-pytorch-lightning==2.1.0
+# pytorch-lightning==2.1.0
+pytorch-lightning
 bitsandbytes
 huggingface_hub[cli]
 tokenizers==0.19.1
@@ -24,7 +26,7 @@ librosa
 matplotlib
 numpy
 frechet_audio_distance
-laion-clap==1.1.7
+# laion-clap==1.1.7  <-- Moved to Dockerfile to override dependency conflict
 
 # For music visualization and analysis
 mir_eval
@@ -34,3 +36,7 @@ pandas
 
 # Testing
 pytest
+
+# For Original Implementation
+mamba-ssm
+causal-conv1d

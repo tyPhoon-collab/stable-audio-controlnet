@@ -56,12 +56,20 @@ model:
       # output_dim: 32
       # hidden_dim: 128
       # num_layers: 2
-      _target_: main.chord_backbones.ChordResConvBackbone
+      _target_: main.chord_backbones.ChordMambaBackbone
       input_dim: 128
       output_dim: 32
       hidden_dim: 128
-      kernel_size: 7
-      num_layers: 3
+      num_layers: 2
+      d_state: 16
+      d_conv: 4
+      expand: 2
+      # _target_: main.chord_backbones.ChordResConvBackbone
+      # input_dim: 128
+      # output_dim: 32
+      # hidden_dim: 128
+      # kernel_size: 7
+      # num_layers: 3
 
 datamodule:
   _target_: main.module_controlnet_chord.WebDatasetDatamodule
@@ -88,8 +96,8 @@ datamodule:
     shardshuffle: False
 
   shuffle_size: 24
-  batch_size_train: 8
-  batch_size_val: 8
+  batch_size_train: 16
+  batch_size_val: 16
   collate_fn:
     _target_: main.data.dataset_musdb_chord.collate_fn_stems
     _partial_: True
@@ -140,9 +148,9 @@ trainer:
   precision: 16 # Precision used for tensors, default `32`
   accelerator: gpu # `ddp` GPUs train individually and sync gradients, default `None`
   gradient_clip_val: 1.0
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 60
+  max_epochs: 120
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null
