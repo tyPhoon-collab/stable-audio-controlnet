@@ -26,7 +26,10 @@ librosa
 matplotlib
 numpy
 frechet_audio_distance
-# laion-clap==1.1.7  <-- Moved to Dockerfile to override dependency conflict
+
+# Moved to Dockerfile to override dependency conflict
+# soundfile>=0.11.0  # MP3 support requires 0.11.0+
+# laion-clap==1.1.7  # Some load model issues
 
 # For music visualization and analysis
 mir_eval

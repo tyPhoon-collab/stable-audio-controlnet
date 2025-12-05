@@ -1,0 +1,29 @@
+# Conditioner出力次元スイープ設定
+#
+# ChordConditioner の output_dim と internal_dim を変化させる
+# 次元が大きいほど表現力は高いが、オーバーフィットのリスクも
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/conditioner_dims.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-dims
+
+train_params:
+  # output_dim: ControlNetへの最終出力次元
+  model.chord_conditioner.output_dim:
+    - 32
+    - 64
+    - 128
+
+  # internal_dim: Backboneの出力次元
+  model.chord_conditioner.internal_dim:
+    - 16
+    - 32
+    - 64
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

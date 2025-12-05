@@ -1,0 +1,28 @@
+# バッチサイズ・勾配累積スイープ設定
+#
+# 実効バッチサイズ = batch_size × accumulate_grad_batches
+# VRAM制約内で大きな実効バッチサイズを実現
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/batch_size.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-batch
+
+train_params:
+  # バッチサイズと勾配累積の組み合わせ
+  # 実効バッチサイズ: 8, 16, 32, 64
+  datamodule.batch_size_train:
+    - 8
+    - 16
+
+  trainer.accumulate_grad_batches:
+    - 1
+    - 2
+    - 4
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

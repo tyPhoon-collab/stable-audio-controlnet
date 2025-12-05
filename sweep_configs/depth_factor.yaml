@@ -1,0 +1,23 @@
+# ControlNet深度（depth_factor）スイープ設定
+#
+# depth_factorはControlNetが適用されるDiT層の割合を決定
+# 0.3 = 浅い層のみ、1.0 = 全層
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/depth_factor.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-depth
+
+train_params:
+  model.depth_factor:
+    - 0.3
+    - 0.5
+    - 0.7
+    - 1.0
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

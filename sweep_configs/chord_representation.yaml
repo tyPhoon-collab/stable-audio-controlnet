@@ -1,0 +1,24 @@
+# 和音表現方式スイープ設定
+#
+# 3種類のChordConditionerを比較:
+# - EmbeddingChordConditioner: 25和音を直接Embedding
+# - SeparatedEmbeddingChordConditioner: Root/Quality分離Embedding
+# - CocoMullaChordConditioner: Coco-Mulla表現（Root+Quality+Chroma）
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/chord_representation.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-repr
+
+train_params:
+  model.chord_conditioner._target_:
+    - main.chord_conditioner.EmbeddingChordConditioner
+    - main.chord_conditioner.SeparatedEmbeddingChordConditioner
+    - main.chord_conditioner.CocoMullaChordConditioner
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

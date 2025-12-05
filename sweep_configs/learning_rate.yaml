@@ -1,0 +1,21 @@
+# 学習率スイープ設定
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/learning_rate.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-lr
+
+train_params:
+  model.lr:
+    - 1e-4
+    - 5e-5
+    - 1e-5
+    - 5e-6
+    - 1e-6
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

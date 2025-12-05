@@ -1,0 +1,22 @@
+# Weight Decay スイープ設定
+#
+# L2正則化の強さ。過学習防止に有効
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/weight_decay.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-wd
+
+train_params:
+  model.lr_weight_decay:
+    - 0.0
+    - 1e-4
+    - 1e-3
+    - 1e-2
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

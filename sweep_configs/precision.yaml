@@ -1,0 +1,19 @@
+# 浮動小数点精度スイープ設定
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/precision.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-precision
+
+train_params:
+  trainer.precision:
+    - 16
+    - 32
+    - bf16-mixed
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

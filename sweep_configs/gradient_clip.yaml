@@ -1,0 +1,24 @@
+# Gradient Clipping スイープ設定
+#
+# 勾配クリッピングは訓練の安定性に影響
+# 値が小さすぎると学習が遅く、大きすぎると不安定に
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/gradient_clip.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-gradclip
+
+train_params:
+  trainer.gradient_clip_val:
+    - 0.5
+    - 1.0
+    - 2.0
+    - 5.0
+    - null  # クリッピングなし
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

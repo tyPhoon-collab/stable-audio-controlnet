@@ -8,9 +8,9 @@
 #
 ###############################################################################
 
-# コンテナ名
-MODEL_CONTAINER="stable-audio-controlnet-stable-audio-controlnet-1"
-ACR_CONTAINER="ismir2019-large-vocabulary-chord-recognition-acr-1"
+# コンテナ名（docker-compose.yamlのcontainer_nameと一致させる）
+MODEL_CONTAINER="${MODEL_CONTAINER:-stable-audio-controlnet}"
+ACR_CONTAINER="${ACR_CONTAINER:-acr}"
 
 # カラー定義
 RED='\033[0;31m'

@@ -42,6 +42,11 @@ class EvalConfig:
     sample_rate: int
     generation: GenerationConfig
     save_batch_audio: bool = False
+    overrides: list[str] = None
+
+    def __post_init__(self):
+        if self.overrides is None:
+            self.overrides = []
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,6 +130,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="元のバッチ音源も保存するかどうか",
     )
+    parser.add_argument(
+        "--overrides",
+        type=str,
+        nargs="*",
+        default=[],
+        help="Hydra設定のオーバーライド (例: model.chord_conditioner.backbone._target_=...)",
+    )
 
     return parser.parse_args()
 
@@ -142,11 +154,13 @@ def _load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
         FileNotFoundError: チェックポイントが見つからない場合
     """
 
+    # 評価時にはexp設定とともに、バックボーン設定などのオーバーライドも適用
+    all_overrides = [f"exp={config.exp_config}"] + list(config.overrides)
     model, cond_cfg = load_model_and_config(
         exp_config=config.exp_config,
         checkpoint_path=config.checkpoint_path,
         device=config.generation.device,
-        overrides=[f"exp={config.exp_config}"],
+        overrides=all_overrides,
     )
 
     if not isinstance(model, Model):
@@ -515,6 +529,7 @@ def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
         sample_rate=args.sample_rate,
         generation=generation_config,
         save_batch_audio=args.save_batch_audio,
+        overrides=args.overrides,
     )
 
 

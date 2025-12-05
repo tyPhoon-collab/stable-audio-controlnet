@@ -1,0 +1,32 @@
+# 和音アノテーション語彙スイープ設定
+#
+# 異なる和音認識精度のアノテーションで比較:
+# - musdb_small: シンプル (maj/min のみ)
+# - musdb_train: 標準
+# - musdb_large: 拡張語彙 (7th, dim, aug等を含む)
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/chord_vocabulary.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-vocab
+
+train_params:
+  # 訓練データのアノテーションディレクトリ
+  datamodule.train_dataset.lab_dir:
+    - /app/data/musdb_small_train
+    - /app/data/musdb_train
+    - /app/data/musdb_large_train
+
+  # 検証データも対応して切り替え（同じインデックスで）
+  # ※ 現在の実装では個別に指定が必要
+  # datamodule.val_dataset.lab_dir:
+  #   - /app/data/musdb_small_test
+  #   - /app/data/musdb_test
+  #   - /app/data/musdb_large_test
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

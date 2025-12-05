@@ -1,0 +1,32 @@
+# Mambaバックボーンパラメータスイープ設定
+#
+# ChordMambaBackboneの内部パラメータを変化
+# - num_layers: Mambaブロックの層数
+# - hidden_dim: 隠れ層の次元
+# - d_state: SSMの状態次元
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/mamba_params.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-mamba
+
+train_params:
+  # Mambaの層数
+  model.chord_conditioner.backbone.num_layers:
+    - 1
+    - 2
+    - 3
+    - 4
+
+  # 隠れ層次元
+  model.chord_conditioner.backbone.hidden_dim:
+    - 64
+    - 128
+    - 256
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

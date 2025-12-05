@@ -6,6 +6,8 @@ x-gpu: &x-gpu
           - driver: nvidia
             count: 1
             capabilities: [gpu]
+      limits:
+        memory: 64g
 
 x-gui: &x-gui
   build:
@@ -20,6 +22,7 @@ secrets:
 
 services:
   stable-audio-controlnet:
+    container_name: stable-audio-controlnet
     build:
       context: .
       dockerfile: Dockerfile

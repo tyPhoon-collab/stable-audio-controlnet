@@ -1,0 +1,71 @@
+# ハイパーパラメータスイープ設定サンプル
+#
+# このファイルを編集して、比較したいパラメータを設定してください。
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/backbone_comparison.yaml
+#
+
+# ベース設定
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-backbone
+
+# 評価パラメータ
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16
+
+# バックボーン比較実験
+# 各バックボーンごとに専用パラメータを設定
+backbone_experiments:
+  - name: mamba
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordMambaBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+      model.chord_conditioner.backbone.hidden_dim: 128
+      model.chord_conditioner.backbone.num_layers: 2
+      model.chord_conditioner.backbone.d_state: 16
+      model.chord_conditioner.backbone.d_conv: 4
+      model.chord_conditioner.backbone.expand: 2
+
+  - name: gru
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordGRUBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+      model.chord_conditioner.backbone.hidden_dim: 128
+      model.chord_conditioner.backbone.num_layers: 2
+
+  - name: dilated_conv
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordDilatedConvBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+      model.chord_conditioner.backbone.hidden_dim: 128
+      model.chord_conditioner.backbone.kernel_size: 3
+      model.chord_conditioner.backbone.num_layers: 4
+
+  - name: mlp
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordMlpBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+
+  - name: conv
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordConvBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+      model.chord_conditioner.backbone.kernel_size: 7
+      model.chord_conditioner.backbone.padding: 3
+
+  - name: res_conv
+    params:
+      model.chord_conditioner.backbone._target_: main.chord_backbones.ChordResConvBackbone
+      model.chord_conditioner.backbone.input_dim: 128
+      model.chord_conditioner.backbone.output_dim: 32
+      model.chord_conditioner.backbone.hidden_dim: 128
+      model.chord_conditioner.backbone.kernel_size: 7
+      model.chord_conditioner.backbone.num_layers: 3

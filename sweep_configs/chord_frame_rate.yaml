@@ -1,0 +1,23 @@
+# 和音フレームレートスイープ設定
+#
+# 和音アノテーションの時間解像度
+# 高いほど細かい変化を捉えるが、ノイズも増える
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/chord_frame_rate.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-framerate
+
+train_params:
+  chord_frame_rate:
+    - 10.0
+    - 21.533203125  # デフォルト
+    - 24.0
+    - 43.0
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

@@ -1,0 +1,31 @@
+# 評価パラメータスイープ設定サンプル
+#
+# 訓練済みチェックポイントに対して、cfg_scaleとstepsの組み合わせで評価を実行
+#
+# 使用方法:
+#   bash run_eval_sweep.sh sweep_configs/eval_params.yaml --ckpt logs/ckpts/best.ckpt
+#
+
+# チェックポイントパス（CLIで--ckptを指定した場合はそちらが優先）
+# checkpoint: logs/ckpts/best.ckpt
+
+# ベース実験設定
+base_exp: train_musdb_controlnet_chord
+
+# Hydraオーバーライド（バックボーン設定など）
+# 訓練時と異なるバックボーンを使用した場合に指定
+# hydra_overrides:
+#   - "~model.chord_conditioner.backbone"
+#   - "+model.chord_conditioner.backbone._target_=main.chord_backbones.ChordGRUBackbone"
+
+# スイープ対象パラメータ
+sweep_params:
+  # cfg_scale: [3.0, 5.0, 7.0, 10.0]
+  # steps: [50, 100, 150]
+  cfg_scale: [0.0, 7.0, 15.0]
+  steps: [100, 250]
+
+# 固定パラメータ
+eval_params:
+  samples: 100
+  batch_size: 32

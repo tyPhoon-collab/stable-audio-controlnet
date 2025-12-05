@@ -1,0 +1,29 @@
+# データ拡張スイープ設定
+#
+# ピッチシフトとゲイン拡張の確率を変化させる
+# ピッチシフトは和音認識への悪影響の可能性あり
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/augmentation.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-aug
+
+train_params:
+  # ピッチシフトの適用確率
+  augmentation.pitch_shift_p:
+    - 0.0
+    - 0.5
+    - 1.0
+
+  # ゲイン拡張の適用確率
+  augmentation.gain_augment_p:
+    - 0.0
+    - 0.5
+    - 1.0
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

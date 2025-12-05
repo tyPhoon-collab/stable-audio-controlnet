@@ -1,0 +1,33 @@
+# 複合パラメータスイープ設定
+#
+# 複数のパラメータを同時に変化させる例
+# 注意: 組み合わせ爆発に注意（3 x 2 x 2 = 12実験）
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/combined.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-combined
+
+train_params:
+  # バックボーン（上位3種）
+  model.chord_conditioner.backbone._target_:
+    - main.chord_backbones.ChordMambaBackbone
+    - main.chord_backbones.ChordGRUBackbone
+    - main.chord_backbones.ChordDilatedConvBackbone
+
+  # 学習率
+  model.lr:
+    - 5e-6
+    - 1e-5
+
+  # ControlNet深度
+  model.depth_factor:
+    - 0.5
+    - 0.7
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

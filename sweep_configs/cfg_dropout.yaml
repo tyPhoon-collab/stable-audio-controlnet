@@ -1,0 +1,24 @@
+# CFG Dropout確率スイープ設定
+#
+# CFG Dropout はトレーニング時に条件付き情報をランダムにドロップする確率
+# 高すぎると条件無視、低すぎるとClassifier-Free Guidanceが効きにくい
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py --config sweep_configs/cfg_dropout.yaml
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-cfg-dropout
+
+train_params:
+  model.cfg_dropout_prob:
+    - 0.0
+    - 0.05
+    - 0.1
+    - 0.15
+    - 0.2
+
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16

@@ -1,0 +1,31 @@
+# 生成パラメータスイープ設定
+#
+# 訓練済みモデルに対して、cfg_scaleとstepsの組み合わせを評価
+# --eval-only オプションと併用
+#
+# 使用方法:
+#   python scripts/sweep_experiments.py \
+#     --config sweep_configs/generation_params.yaml \
+#     --eval-only
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-gen
+
+# 訓練パラメータは空（評価のみ）
+train_params: {}
+
+# 評価パラメータのグリッド
+eval_params:
+  cfg_scale:
+    - 3.0
+    - 5.0
+    - 7.0
+    - 10.0
+    - 15.0
+  steps:
+    - 50
+    - 100
+    - 150
+    - 200
+  samples: 50
+  batch_size: 16

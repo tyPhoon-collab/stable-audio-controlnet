@@ -39,3 +39,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Override laion-clap version (stable-audio-tools requires 1.1.4, but we want 1.1.7)
 RUN pip install --no-cache-dir --no-deps --force-reinstall laion-clap==1.1.7
+
+# Override soundfile version to ensure MP3 support
+RUN pip install --no-cache-dir --no-deps --force-reinstall soundfile>=0.11.0
