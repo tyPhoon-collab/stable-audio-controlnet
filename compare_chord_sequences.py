@@ -78,9 +78,6 @@ QUALITY_SATURATION_LIGHTNESS = {
     "N": (0.0, 0.5),
 }
 
-# レガシー互換性用（Nの色定義のみ）
-CHORD_COLOR_N = "#9E9E9E"
-
 # ビジュアル定数
 PLOT_COLORS = {
     "match_bg": "#E8F5E9",
@@ -119,6 +116,9 @@ PLOT_DIMENSIONS = {
     "mark_fontsize": 16,
     "legend_width": 0.04,
     "legend_height": 0.06,
+    "y_pos": 0.5,
+    "text_size_scale": 25,
+    "hue_step_per_root": 30,
 }
 
 GRID_CONFIG = {
@@ -129,6 +129,342 @@ GRID_CONFIG = {
 DPI_DEFAULT = 300
 
 
+class ColorGenerator:
+    """和音の色生成を担当する独立クラス"""
+
+    def __init__(
+        self,
+        quality_hue_map: Dict[str, int],
+        saturation_lightness: Dict[str, tuple],
+        color_n: str = "#9E9E9E",
+    ):
+        """
+        Args:
+            quality_hue_map: 和音品質のHueマッピング
+            saturation_lightness: 品質ごとの飽和度と明度
+            color_n: "N"（コードなし）の色
+        """
+        self.quality_hue_map = quality_hue_map
+        self.saturation_lightness = saturation_lightness
+        self.color_n = color_n
+
+    def get_chord_color(self, root: str, quality: str) -> str:
+        """
+        根音と品質を考慮した色を生成
+
+        Args:
+            root: ルート音（"C"など）
+            quality: 和音品質（"maj"など）
+
+        Returns:
+            16進数カラーコード
+        """
+        if root == "N" or quality == "N":
+            return self.color_n
+
+        base_hue = self.quality_hue_map.get(quality, 120)
+
+        # ルート音から色相オフセットを計算
+        if root in CHROMATIC_SCALE:
+            root_index = CHROMATIC_SCALE.index(root)
+            hue_offset = (root_index * PLOT_DIMENSIONS["hue_step_per_root"]) % 360
+            final_hue = (base_hue + hue_offset) % 360
+        else:
+            final_hue = base_hue
+
+        # 品質に応じた飽和度と明度を取得
+        saturation, lightness = self.saturation_lightness.get(quality, (0.4, 0.7))
+
+        # HLSからRGBに変換
+        r, g, b = colorsys.hls_to_rgb(final_hue / 360, lightness, saturation)
+        return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+
+class PlotStyleManager:
+    """プロット関連のスタイル設定と共通描画ロジックを管理するクラス"""
+
+    @staticmethod
+    def configure_plot_axes(
+        ax, max_duration: float, ylabel: str, ylim: tuple = (0, 1)
+    ) -> None:
+        """
+        プロット軸の共通設定
+
+        Args:
+            ax: matplotlib軸
+            max_duration: 最大継続時間
+            ylabel: Y軸ラベル
+            ylim: Y軸の範囲
+        """
+        ax.set_xlim(-0.5, max_duration + 0.5)
+        ax.set_ylim(*ylim)
+        ax.set_xlabel(
+            "Time (seconds)", fontsize=PLOT_FONTSIZE["label"], fontweight="bold"
+        )
+        ax.set_ylabel(ylabel, fontsize=PLOT_FONTSIZE["label"], fontweight="bold")
+        ax.set_yticks([])
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.grid(True, axis="x", alpha=0.3, linestyle="--")
+
+    @staticmethod
+    def calculate_text_size(duration: float, max_duration: float) -> float:
+        """
+        継続時間に基づいてテキストサイズを計算
+
+        Args:
+            duration: コードの継続時間
+            max_duration: 最大継続時間
+
+        Returns:
+            計算されたテキストサイズ
+        """
+        return max(
+            PLOT_FONTSIZE["chord_min"],
+            min(
+                PLOT_FONTSIZE["chord_max"],
+                duration * PLOT_DIMENSIONS["text_size_scale"] / max_duration,
+            ),
+        )
+
+    @staticmethod
+    def draw_chord_block(
+        ax,
+        start: float,
+        duration: float,
+        y_pos: float,
+        block_height: float,
+        chord: str,
+        color: str,
+        text_size: float,
+    ) -> None:
+        """
+        単一のコードブロックを描画
+
+        Args:
+            ax: matplotlib軸
+            start: 開始時刻
+            duration: 継続時間
+            y_pos: Y位置
+            block_height: ブロック高さ
+            chord: コード名
+            color: ブロックの色
+            text_size: テキストサイズ
+        """
+        rect = patches.FancyBboxPatch(
+            (start, y_pos - block_height / 2),
+            duration,
+            block_height,
+            boxstyle=f"round,pad={PLOT_DIMENSIONS['block_pad']}",
+            facecolor=color,
+            edgecolor="white",
+            linewidth=2,
+            alpha=0.9,
+        )
+        ax.add_patch(rect)
+
+        ax.text(
+            start + duration / 2,
+            y_pos,
+            chord,
+            ha="center",
+            va="center",
+            fontsize=text_size,
+            fontweight="bold",
+            color="white",
+        )
+
+    @staticmethod
+    def draw_background_block(
+        ax,
+        start: float,
+        duration: float,
+        y_pos: float,
+        block_height: float,
+        is_match: bool,
+    ) -> None:
+        """
+        背景ブロック（マッチ/ミスマッチ情報表示用）を描画
+
+        Args:
+            ax: matplotlib軸
+            start: 開始時刻
+            duration: 継続時間
+            y_pos: Y位置
+            block_height: ブロック高さ
+            is_match: 一致しているかどうか
+        """
+        background_color = (
+            PLOT_COLORS["match_bg"] if is_match else PLOT_COLORS["mismatch_bg"]
+        )
+        edge_color = (
+            PLOT_COLORS["match_edge"] if is_match else PLOT_COLORS["mismatch_edge"]
+        )
+        edge_width = 2 if is_match else 3
+
+        bg_rect = patches.FancyBboxPatch(
+            (start, y_pos - block_height / 2 - PLOT_DIMENSIONS["bg_offset"]),
+            duration,
+            block_height + PLOT_DIMENSIONS["bg_offset"] * 2,
+            boxstyle=f"round,pad={PLOT_DIMENSIONS['bg_pad']}",
+            facecolor=background_color,
+            edgecolor=edge_color,
+            linewidth=edge_width,
+            alpha=0.5,
+        )
+        ax.add_patch(bg_rect)
+
+    @staticmethod
+    def draw_match_indicator(
+        ax,
+        start: float,
+        duration: float,
+        y_pos: float,
+        block_height: float,
+        is_match: bool,
+    ) -> None:
+        """
+        一致/不一致のマーク（✓/✗）を描画
+
+        Args:
+            ax: matplotlib軸
+            start: 開始時刻
+            duration: 継続時間
+            y_pos: Y位置
+            block_height: ブロック高さ
+            is_match: 一致しているかどうか
+        """
+        mark_symbol = "✓" if is_match else "✗"
+        mark_color = (
+            PLOT_COLORS["match_edge"] if is_match else PLOT_COLORS["mismatch_edge"]
+        )
+        ax.text(
+            start + duration - PLOT_DIMENSIONS["mark_offset"],
+            y_pos + block_height / 2 + PLOT_DIMENSIONS["time_depth"],
+            mark_symbol,
+            ha="center",
+            va="center",
+            fontsize=PLOT_DIMENSIONS["mark_fontsize"],
+            fontweight="bold",
+            color=mark_color,
+        )
+
+    @staticmethod
+    def draw_time_labels(
+        ax,
+        data: pd.DataFrame,
+        y_pos: float,
+        block_height: float,
+    ) -> None:
+        """
+        時間ラベルを描画
+
+        Args:
+            ax: matplotlib軸
+            data: コード進行データ
+            y_pos: Y位置
+            block_height: ブロック高さ
+        """
+        for idx, row in data.iterrows():
+            start = row["start_time"]
+            duration = row["duration"]
+            ax.text(
+                start + duration / 2,
+                y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
+                f"{start:.1f}s",
+                ha="center",
+                va="top",
+                fontsize=PLOT_FONTSIZE["time"],
+                color="gray",
+            )
+
+        # 最後の時間表示
+        final_time = data.iloc[-1]["start_time"] + data.iloc[-1]["duration"]
+        ax.text(
+            final_time,
+            y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
+            f"{final_time:.1f}s",
+            ha="center",
+            va="top",
+            fontsize=PLOT_FONTSIZE["time_final"],
+            color="gray",
+        )
+
+    @staticmethod
+    def draw_legend_box(ax: plt.Axes) -> None:
+        """
+        凡例ボックスを描画
+
+        Args:
+            ax: matplotlib軸（transAxes座標系を使用）
+        """
+        legend_y = 0.25
+
+        # Match凡例
+        ax.add_patch(
+            patches.Rectangle(
+                (0.05, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["match_bg"],
+                edgecolor=PLOT_COLORS["match_edge"],
+                linewidth=1.5,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.11,
+            legend_y - 0.03,
+            "Match",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        # Mismatch凡例
+        ax.add_patch(
+            patches.Rectangle(
+                (0.25, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["mismatch_bg"],
+                edgecolor=PLOT_COLORS["mismatch_edge"],
+                linewidth=1.5,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.31,
+            legend_y - 0.03,
+            "Mismatch",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+        # No Match凡例
+        ax.add_patch(
+            patches.Rectangle(
+                (0.48, legend_y - PLOT_DIMENSIONS["legend_height"]),
+                PLOT_DIMENSIONS["legend_width"],
+                PLOT_DIMENSIONS["legend_height"],
+                facecolor=PLOT_COLORS["no_match_bg"],
+                edgecolor=PLOT_COLORS["no_match_edge"],
+                linewidth=1,
+                transform=ax.transAxes,
+            )
+        )
+        ax.text(
+            0.54,
+            legend_y - 0.03,
+            "No Match",
+            fontsize=PLOT_FONTSIZE["legend"],
+            va="center",
+            transform=ax.transAxes,
+        )
+
+
 class ChordSequenceAnalyzer:
     """コード進行分析クラス"""
 
@@ -136,6 +472,9 @@ class ChordSequenceAnalyzer:
         self.data = None
         self.annotations: List[LabAnnotation] = []
         self.total_duration = 0
+        self.color_generator = ColorGenerator(
+            QUALITY_HUE_MAP, QUALITY_SATURATION_LIGHTNESS
+        )
 
     def load_lab_file(self, file_path: str) -> pd.DataFrame:
         """
@@ -195,27 +534,26 @@ class ChordSequenceAnalyzer:
         if self.data is None:
             return {}
 
+        def _get_mode_safely(series: pd.Series, default: str = "N") -> str:
+            """安全にモード値を取得"""
+            mode_result = series.mode()
+            return mode_result.iloc[0] if not mode_result.empty else default
+
         stats = {
             "total_chords": len(self.data),
             "total_duration": self.total_duration,
             "unique_chords": self.data["chord"].nunique(),
             "unique_roots": self.data[self.data["root"] != "N"]["root"].nunique(),
-            "most_common_chord": self.data["chord"].mode().iloc[0]
-            if not self.data["chord"].mode().empty
-            else "N",
-            "most_common_root": self.data[self.data["root"] != "N"]["root"]
-            .mode()
-            .iloc[0]
-            if not self.data[self.data["root"] != "N"]["root"].mode().empty
-            else "N",
+            "most_common_chord": _get_mode_safely(self.data["chord"]),
+            "most_common_root": _get_mode_safely(
+                self.data[self.data["root"] != "N"]["root"]
+            ),
             "avg_chord_duration": self.data["duration"].mean(),
+            "quality_distribution": self.data["quality"].value_counts().to_dict(),
+            "root_distribution": self.data[self.data["root"] != "N"]["root"]
+            .value_counts()
+            .to_dict(),
         }
-
-        quality_dist = self.data["quality"].value_counts()
-        stats["quality_distribution"] = quality_dist.to_dict()
-
-        root_dist = self.data[self.data["root"] != "N"]["root"].value_counts()
-        stats["root_distribution"] = root_dist.to_dict()
 
         return stats
 
@@ -236,37 +574,7 @@ class ChordSequenceComparison:
         self.label2 = label2
         self.data1 = analyzer1.data
         self.data2 = analyzer2.data
-
-    def get_chord_color(self, root: str, quality: str) -> str:
-        """
-        根音と品質を考慮した色を生成
-
-        Args:
-            root: ルート音（"C"など）
-            quality: 和音品質（"maj"など）
-
-        Returns:
-            16進数カラーコード
-        """
-        if root == "N" or quality == "N":
-            return CHORD_COLOR_N
-
-        base_hue = QUALITY_HUE_MAP.get(quality, 120)
-
-        # ルート音から色相オフセットを計算
-        if root in CHROMATIC_SCALE:
-            root_index = CHROMATIC_SCALE.index(root)
-            hue_offset = (root_index * 30) % 360
-            final_hue = (base_hue + hue_offset) % 360
-        else:
-            final_hue = base_hue
-
-        # 品質に応じた飽和度と明度を取得
-        saturation, lightness = QUALITY_SATURATION_LIGHTNESS.get(quality, (0.4, 0.7))
-
-        # HLSからRGBに変換
-        r, g, b = colorsys.hls_to_rgb(final_hue / 360, lightness, saturation)
-        return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+        self.color_gen = analyzer1.color_generator
 
     def plot_comparison(
         self,
@@ -289,34 +597,28 @@ class ChordSequenceComparison:
             return
 
         if highlight_diff:
-            # 差異ハイライト表示
             fig = self._plot_comparison_with_diff(figsize, save_path, show_stats)
         else:
-            # 通常の表示
-            fig, (ax1, ax2) = plt.subplots(
-                2, 1, figsize=figsize, gridspec_kw={"height_ratios": [1, 1]}
-            )
+            fig = self._plot_comparison_simple(figsize, save_path)
 
-            # 共通の時間軸に合わせるため、最大値を計算
-            max_duration = max(
-                self.analyzer1.total_duration, self.analyzer2.total_duration
-            )
+        return fig
 
-            # 上：シーケンス1
-            self._plot_sequence(
-                ax1, self.data1, self.label1, max_duration, is_first=True
-            )
+    def _plot_comparison_simple(self, figsize: tuple, save_path: Optional[str] = None):
+        """通常の表示（差異なし）"""
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=figsize, gridspec_kw={"height_ratios": [1, 1]}
+        )
 
-            # 下：シーケンス2
-            self._plot_sequence(
-                ax2, self.data2, self.label2, max_duration, is_first=False
-            )
+        max_duration = max(self.analyzer1.total_duration, self.analyzer2.total_duration)
 
-            plt.tight_layout()
+        self._plot_sequence(ax1, self.data1, self.label1, max_duration, is_first=True)
+        self._plot_sequence(ax2, self.data2, self.label2, max_duration, is_first=False)
 
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches="tight")
-                logger.info(f"Comparison plot saved to {save_path}")
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=DPI_DEFAULT, bbox_inches="tight")
+            logger.info(f"Comparison plot saved to {save_path}")
 
         return fig
 
@@ -338,8 +640,8 @@ class ChordSequenceComparison:
             max_duration: 共通の最大継続時間
             is_first: 最初のシーケンスかどうか
         """
-        y_pos = 0.5
-        block_height = 0.6
+        y_pos = PLOT_DIMENSIONS["y_pos"]
+        block_height = PLOT_DIMENSIONS["block_height"]
 
         for idx, row in data.iterrows():
             start = row["start_time"]
@@ -348,85 +650,27 @@ class ChordSequenceComparison:
             quality = row["quality"]
             root = row["root"]
 
-            # 色を決定
-            base_color = self.get_chord_color(root, quality)
+            color = self.color_gen.get_chord_color(root, quality)
+            text_size = PlotStyleManager.calculate_text_size(duration, max_duration)
 
-            # ブロック（角丸）を描画
-            rect = patches.FancyBboxPatch(
-                (start, y_pos - block_height / 2),
-                duration,
-                block_height,
-                boxstyle="round,pad=0.02",
-                facecolor=base_color,
-                edgecolor="white",
-                linewidth=2,
-                alpha=0.9,
-            )
-            ax.add_patch(rect)
-
-            # コード名を表示
-            text_size = max(12, min(20, duration * 25 / max_duration))
-            ax.text(
-                start + duration / 2,
-                y_pos,
-                chord,
-                ha="center",
-                va="center",
-                fontsize=text_size,
-                fontweight="bold",
-                color="white",
+            PlotStyleManager.draw_chord_block(
+                ax, start, duration, y_pos, block_height, chord, color, text_size
             )
 
-            # 時間表示
-            ax.text(
-                start + duration / 2,
-                y_pos - block_height / 2 - 0.1,
-                f"{start:.1f}s",
-                ha="center",
-                va="top",
-                fontsize=11,
-                color="gray",
-            )
+        PlotStyleManager.draw_time_labels(ax, data, y_pos, block_height)
 
-        # 最後の時間表示
-        final_time = data.iloc[-1]["start_time"] + data.iloc[-1]["duration"]
-        ax.text(
-            final_time,
-            y_pos - block_height / 2 - 0.1,
-            f"{final_time:.1f}s",
-            ha="center",
-            va="top",
-            fontsize=8,
-            color="gray",
+        # Y軸ラベルの設定
+        ylabel = (
+            "Ground Truth\n(Control Signal)"
+            if is_first
+            else "Estimated Chords\n(Generated Audio)"
+        )
+        ylabel_color = (
+            PLOT_COLORS["match_text"] if is_first else PLOT_COLORS["mismatch_text"]
         )
 
-        ax.set_xlim(-0.5, max_duration + 0.5)
-        ax.set_ylim(0, 1)
-        ax.set_xlabel(
-            "Time (seconds)", fontsize=PLOT_FONTSIZE["label"], fontweight="bold"
-        )
-
-        # ラベルを設定（第1・第2シーケンスの役割を明示）
-        if is_first:
-            ax.set_ylabel(
-                "Ground Truth\n(Control Signal)",
-                fontsize=PLOT_FONTSIZE["ylabel"],
-                fontweight="bold",
-                color=PLOT_COLORS["match_text"],
-            )
-        else:
-            ax.set_ylabel(
-                "Estimated Chords\n(Generated Audio)",
-                fontsize=PLOT_FONTSIZE["ylabel"],
-                fontweight="bold",
-                color=PLOT_COLORS["mismatch_text"],
-            )
-
-        ax.set_yticks([])
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
-        ax.grid(True, axis="x", alpha=0.3, linestyle="--")
+        PlotStyleManager.configure_plot_axes(ax, max_duration, ylabel)
+        ax.get_yaxis().label.set_color(ylabel_color)
 
     def _plot_comparison_with_diff(
         self, figsize=(20, 14), save_path: Optional[str] = None, show_stats: bool = True
@@ -442,9 +686,6 @@ class ChordSequenceComparison:
         if self.data1 is None or self.data2 is None:
             logger.error("Data not available for plotting")
             return None
-
-        data1 = self.data1
-        data2 = self.data2
 
         max_duration = max(self.analyzer1.total_duration, self.analyzer2.total_duration)
 
@@ -465,43 +706,26 @@ class ChordSequenceComparison:
         ax1 = fig.add_subplot(gs[1] if show_stats else gs[0])
         ax2 = fig.add_subplot(gs[2] if show_stats else gs[1])
 
-        annotations1 = self.analyzer1.annotations
-        annotations2 = self.analyzer2.annotations
-
-        # シーケンス1のマッチ情報を計算
-        matches, root_matches, quality_matches = chord_match_flags_by_overlap(
-            annotations1, annotations2
+        # マッチ情報の計算
+        matches1, root_matches1, quality_matches1 = chord_match_flags_by_overlap(
+            self.analyzer1.annotations, self.analyzer2.annotations
         )
-
-        # シーケンス1を描画
-        self._plot_sequence_with_diff(
-            ax1,
-            data1,
-            self.label1,
-            max_duration,
-            matches,
-            is_first=True,
-        )
-
-        # シーケンス2のマッチ情報を計算
         matches2, root_matches2, quality_matches2 = chord_match_flags_by_overlap(
-            annotations2, annotations1
+            self.analyzer2.annotations, self.analyzer1.annotations
         )
 
-        # シーケンス2を描画
+        # シーケンスを描画
         self._plot_sequence_with_diff(
-            ax2,
-            data2,
-            self.label2,
-            max_duration,
-            matches2,
-            is_first=False,
+            ax1, self.data1, self.label1, max_duration, matches1, is_first=True
+        )
+        self._plot_sequence_with_diff(
+            ax2, self.data2, self.label2, max_duration, matches2, is_first=False
         )
 
         # 統計情報を表示（オプショナル）
         if show_stats and ax_title is not None:
             self._plot_statistics_header(
-                ax_title, matches, root_matches, quality_matches
+                ax_title, matches1, root_matches1, quality_matches1
             )
 
         if save_path:
@@ -531,9 +755,8 @@ class ChordSequenceComparison:
             matches: 一致フラグのリスト
             is_first: 最初のシーケンスかどうか
         """
-        y_pos = 0.5
-        block_height = 0.6
-
+        y_pos = PLOT_DIMENSIONS["y_pos"]
+        block_height = PLOT_DIMENSIONS["block_height"]
         match_idx = 0
 
         for idx, row in data_main.iterrows():
@@ -543,117 +766,33 @@ class ChordSequenceComparison:
             quality = row["quality"]
             root = row["root"]
 
-            # 色を決定
-            base_color = self.get_chord_color(root, quality)
+            color = self.color_gen.get_chord_color(root, quality)
+            text_size = PlotStyleManager.calculate_text_size(duration, max_duration)
 
             # 対応するコードが一致しているかを確認
             is_match = match_idx < len(matches) and matches[match_idx]
             match_idx += 1
 
-            # 背景色を設定（差異をハイライト）
-            if is_match:
-                # 一致：淡い緑色の背景
-                background_color = PLOT_COLORS["match_bg"]
-                edge_color = PLOT_COLORS["match_edge"]
-                edge_width = 2
-            else:
-                # 不一致：淡い赤色の背景
-                background_color = PLOT_COLORS["mismatch_bg"]
-                edge_color = PLOT_COLORS["mismatch_edge"]
-                edge_width = 3
-
-            # 背景ブロック
-            bg_rect = patches.FancyBboxPatch(
-                (start, y_pos - block_height / 2 - PLOT_DIMENSIONS["bg_offset"]),
-                duration,
-                block_height + PLOT_DIMENSIONS["bg_offset"] * 2,
-                boxstyle=f"round,pad={PLOT_DIMENSIONS['bg_pad']}",
-                facecolor=background_color,
-                edgecolor=edge_color,
-                linewidth=edge_width,
-                alpha=0.5,
-            )
-            ax.add_patch(bg_rect)
-
-            # メインのコードブロック
-            rect = patches.FancyBboxPatch(
-                (start, y_pos - block_height / 2),
-                duration,
-                block_height,
-                boxstyle=f"round,pad={PLOT_DIMENSIONS['block_pad']}",
-                facecolor=base_color,
-                edgecolor="white",
-                linewidth=2,
-                alpha=0.9,
-            )
-            ax.add_patch(rect)
-
-            # コード名を表示
-            text_size = max(
-                PLOT_FONTSIZE["chord_min"],
-                min(PLOT_FONTSIZE["chord_max"], duration * 25 / max_duration),
-            )
-            ax.text(
-                start + duration / 2,
-                y_pos,
-                chord,
-                ha="center",
-                va="center",
-                fontsize=text_size,
-                fontweight="bold",
-                color="white",
+            # 背景ブロックを描画
+            PlotStyleManager.draw_background_block(
+                ax, start, duration, y_pos, block_height, is_match
             )
 
-            # 一致/不一致マーク
-            mark_symbol = "✓" if is_match else "✗"
-            mark_color = (
-                PLOT_COLORS["match_edge"] if is_match else PLOT_COLORS["mismatch_edge"]
-            )
-            ax.text(
-                start + duration - PLOT_DIMENSIONS["mark_offset"],
-                y_pos + block_height / 2 + PLOT_DIMENSIONS["time_depth"],
-                mark_symbol,
-                ha="center",
-                va="center",
-                fontsize=PLOT_DIMENSIONS["mark_fontsize"],
-                fontweight="bold",
-                color=mark_color,
+            # メインのコードブロックを描画
+            PlotStyleManager.draw_chord_block(
+                ax, start, duration, y_pos, block_height, chord, color, text_size
             )
 
-            # 時間表示
-            ax.text(
-                start + duration / 2,
-                y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
-                f"{start:.1f}s",
-                ha="center",
-                va="top",
-                fontsize=PLOT_FONTSIZE["time"],
-                color="gray",
+            # 一致/不一致マークを描画
+            PlotStyleManager.draw_match_indicator(
+                ax, start, duration, y_pos, block_height, is_match
             )
 
-        # 最後の時間表示
-        final_time = data_main.iloc[-1]["start_time"] + data_main.iloc[-1]["duration"]
-        ax.text(
-            final_time,
-            y_pos - block_height / 2 - PLOT_DIMENSIONS["time_offset"],
-            f"{final_time:.1f}s",
-            ha="center",
-            va="top",
-            fontsize=PLOT_FONTSIZE["time_final"],
-            color="gray",
-        )
+        PlotStyleManager.draw_time_labels(ax, data_main, y_pos, block_height)
 
-        ax.set_xlim(-0.5, max_duration + 0.5)
-        ax.set_ylim(-0.2, 1.2)
-        ax.set_xlabel(
-            "Time (seconds)", fontsize=PLOT_FONTSIZE["label"], fontweight="bold"
-        )
-        ax.set_ylabel(label, fontsize=PLOT_FONTSIZE["label"], fontweight="bold")
-        ax.set_yticks([])
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
-        ax.grid(True, axis="x", alpha=0.3, linestyle="--")
+        # Y軸ラベルの設定
+        ylabel = self.label1 if is_first else self.label2
+        PlotStyleManager.configure_plot_axes(ax, max_duration, ylabel, ylim=(-0.2, 1.2))
 
     def _plot_statistics_header(
         self,
@@ -740,71 +879,8 @@ class ChordSequenceComparison:
             transform=ax.transAxes,
         )
 
-        # 凡例（上部）
-        legend_y = 0.25
-        ax.add_patch(
-            patches.Rectangle(
-                (0.05, legend_y - PLOT_DIMENSIONS["legend_height"]),
-                PLOT_DIMENSIONS["legend_width"],
-                PLOT_DIMENSIONS["legend_height"],
-                facecolor=PLOT_COLORS["match_bg"],
-                edgecolor=PLOT_COLORS["match_edge"],
-                linewidth=1.5,
-                transform=ax.transAxes,
-            )
-        )
-        ax.text(
-            0.11,
-            legend_y - 0.03,
-            "Match",
-            fontsize=PLOT_FONTSIZE["legend"],
-            va="center",
-            transform=ax.transAxes,
-        )
-
-        ax.add_patch(
-            patches.Rectangle(
-                (0.25, legend_y - PLOT_DIMENSIONS["legend_height"]),
-                PLOT_DIMENSIONS["legend_width"],
-                PLOT_DIMENSIONS["legend_height"],
-                facecolor=PLOT_COLORS["mismatch_bg"],
-                edgecolor=PLOT_COLORS["mismatch_edge"],
-                linewidth=1.5,
-                transform=ax.transAxes,
-            )
-        )
-        ax.text(
-            0.31,
-            legend_y - 0.03,
-            "Mismatch",
-            fontsize=PLOT_FONTSIZE["legend"],
-            va="center",
-            transform=ax.transAxes,
-        )
-
-        ax.add_patch(
-            patches.Rectangle(
-                (0.48, legend_y - PLOT_DIMENSIONS["legend_height"]),
-                PLOT_DIMENSIONS["legend_width"],
-                PLOT_DIMENSIONS["legend_height"],
-                facecolor=PLOT_COLORS["no_match_bg"],
-                edgecolor=PLOT_COLORS["no_match_edge"],
-                linewidth=1,
-                transform=ax.transAxes,
-            )
-        )
-        ax.text(
-            0.54,
-            legend_y - 0.03,
-            "No Match",
-            fontsize=PLOT_FONTSIZE["legend"],
-            va="center",
-            transform=ax.transAxes,
-        )
-
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
+        # 凡例を描画
+        PlotStyleManager.draw_legend_box(ax)
 
     def plot_statistics_comparison(self, save_path: Optional[str] = None):
         """
