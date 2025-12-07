@@ -24,12 +24,25 @@ def extract_file_accuracies(results: Dict) -> List[Tuple[str, float, float]]:
     Extract filename, accuracy, and root_accuracy from results.
     Returns list of (filename, accuracy, root_accuracy) sorted by accuracy descending.
     """
+    # Handle both old and new JSON formats
     files_data = results.get("chord_metrics", {}).get("files", {})
+    if not files_data:
+        # Fallback to old format
+        files_data = results.get("files", {})
 
     file_list = []
-    for filename, metrics in files_data.items():
-        accuracy = metrics.get("accuracy", 0.0)
-        root_accuracy = metrics.get("root_accuracy", 0.0)
+    for filename, file_info in files_data.items():
+        # Handle new format (chord_metrics.files)
+        if isinstance(file_info, dict) and "accuracy" in file_info:
+            accuracy = file_info.get("accuracy", 0.0)
+            root_accuracy = file_info.get("root_accuracy", 0.0)
+        # Handle old format (files with nested metrics)
+        elif isinstance(file_info, dict) and "metrics" in file_info:
+            accuracy = file_info["metrics"].get("chord_accuracy", 0.0)
+            root_accuracy = file_info["metrics"].get("chord_root_accuracy", 0.0)
+        else:
+            continue
+
         file_list.append((filename, accuracy, root_accuracy))
 
     # Sort by accuracy descending

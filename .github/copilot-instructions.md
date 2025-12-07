@@ -11,9 +11,9 @@ READMEのようなファイルは指示がない限り、作成、編集しな�
 
 Pythonコンテナ内で質問しているので、Pythonコマンドをいつでも実行できます。
 
+- Dockerコマンドはコンテナには存在しません。Dockerを操作する場合は、ユーザーに指示してください。
 - 仮想環境を作成しようとしないでください
-- 新しいパッケージをインストールしようとしないでください
-- 必要なパッケージはrequirements.txtに追加してください
+- 必要なパッケージはインストールしようとせず、requirements.txtに追加してください
 - 実行環境の詳細は`Dockerfile`を参照してください
 
 ## 重要事項
@@ -49,18 +49,14 @@ Stable Audio Openをベースモデルとして、DiT ControlNetの手法で和�
 - FAD
 - CLAP
 
-`data/mixtures`を参照音源としてFADを計算します。
+`data/mixtures`にある音源を参照音源としてFADを計算します。
 
 ### 検証プロセス
 
-```bash
-# コンテナ上で訓練
-PYTHONUNBUFFERED=1 TAG=musdb-controlnet-chord python train.py exp=train_musdb_controlnet_chord
+ホスト側でエントリ用スクリプトを実行する
 
-# ホスト上（Pythonなしの環境）で最適なチェックポイントを使って評価
-bash run_batch_evaluation.sh \
-  --ckpt "logs/ckpts/best.ckpt" \
-  --config train_musdb_controlnet_chord \
-  --samples 100 \
-  --batch-size 32
+```bash
+bash run_train_and_evaluation.sh ...
+
+bash run_sweep.sh ...
 ```

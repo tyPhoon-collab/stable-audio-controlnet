@@ -1,3 +1,6 @@
 [submodule "ISMIR2019-Large-Vocabulary-Chord-Recognition"]
 	path = ISMIR2019-Large-Vocabulary-Chord-Recognition
-	url = https://github.com/music-x-lab/ISMIR2019-Large-Vocabulary-Chord-Recognition.git
+	url = https://github.com/tyPhoon-collab/ISMIR2019-Large-Vocabulary-Chord-Recognition.git
+[submodule "coco-mulla-repo"]
+	path = coco-mulla-repo
+	url = https://github.com/tyPhoon-collab/coco-mulla-repo.git

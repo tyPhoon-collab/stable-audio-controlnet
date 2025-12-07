@@ -519,9 +519,14 @@ def _create_config_from_args(args: argparse.Namespace) -> EvalConfig:
         device=args.device,
     )
 
+    # samplesが負の値の場合はNone（全件）として扱う
+    num_samples = args.samples
+    if num_samples is not None and num_samples < 0:
+        num_samples = None
+
     return EvalConfig(
         seed=args.seed,
-        num_samples=args.samples,
+        num_samples=num_samples,
         batch_size=args.batch_size,
         exp_config=args.config,
         checkpoint_path=args.ckpt,

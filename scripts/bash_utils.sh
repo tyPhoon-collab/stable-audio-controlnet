@@ -11,6 +11,7 @@
 # コンテナ名（docker-compose.yamlのcontainer_nameと一致させる）
 MODEL_CONTAINER="${MODEL_CONTAINER:-stable-audio-controlnet}"
 ACR_CONTAINER="${ACR_CONTAINER:-acr}"
+COCO_MULLA_CONTAINER="${COCO_MULLA_CONTAINER:-coco-mulla}"
 
 # カラー定義
 RED='\033[0;31m'
