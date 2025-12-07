@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,6 @@ CHORD_FRAME_RATE = 21.533203125
 OUTPUT_DIR = "/app/out/coco_mulla/inputs"
 REFERENCE_LABELS_DIR = "/app/out/coco_mulla/reference_labels"
 PROMPT_CSV = "/app/data/description.csv"
-NUM_SAMPLES = 100
 COCO_MULLA_DURATION = 20.0  # coco-mullaの生成長
 
 
@@ -75,7 +75,7 @@ def extract_lab_segment(
         f.writelines(new_lines)
 
 
-def main():
+def main(num_samples: int | None = None):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(REFERENCE_LABELS_DIR, exist_ok=True)
 
@@ -97,13 +97,15 @@ def main():
     # Use DataLoader to handle iteration
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=0)
 
-    print(f"Preparing {NUM_SAMPLES} samples...")
+    # num_samples が None の場合は全件処理
+    limit_str = "unlimited (all)" if num_samples is None else str(num_samples)
+    print(f"Preparing samples (limit: {limit_str})...")
     count = 0
     seen_keys = set()  # 重複チェック用
 
     # Iterate through dataset
-    for i, sample in tqdm(enumerate(dataloader), total=NUM_SAMPLES):
-        if count >= NUM_SAMPLES:
+    for i, sample in tqdm(enumerate(dataloader)):
+        if num_samples is not None and count >= num_samples:
             break
 
         # sample structure from _get_slices:
@@ -158,4 +160,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="coco-mulla用の入力データを準備")
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=100,
+        help="準備するサンプル数 (デフォルト: 100, -1 でフル)",
+    )
+    args = parser.parse_args()
+
+    # -1 を指定された場合は None（全件）に変換
+    num_samples = None if args.num_samples < 0 else args.num_samples
+    main(num_samples=num_samples)

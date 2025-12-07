@@ -78,11 +78,19 @@ run_coco_mulla_generation() {
     log_info "入力ディレクトリ: $INPUT_DIR"
     log_info "実行: docker exec -it $COCO_MULLA_CONTAINER python batch_inference.py ..."
 
+    # SAMPLESが負の値の場合は全件処理（Noneを渡す）
+    local num_samples_arg=""
+    if [ "$SAMPLES" -lt 0 ] 2>/dev/null; then
+        num_samples_arg=""
+    else
+        num_samples_arg="--num-samples $SAMPLES"
+    fi
+
     docker exec -it "$COCO_MULLA_CONTAINER" python batch_inference.py \
         --prepared-input-dir "$INPUT_DIR" \
         --output-dir "$OUTPUT_DIR/generated_raw" \
         --model-path "$MODEL_PATH" \
-        --num-samples "$SAMPLES"
+        $num_samples_arg
 
     if [ $? -ne 0 ]; then
         log_error "coco-mulla推論に失敗しました"
