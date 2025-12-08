@@ -16,17 +16,17 @@ base_exp: train_musdb_controlnet_chord
 eval_params:
   samples: 100
   batch_size: 32
-  chord_dict: submission  # small に変更すると maj/min のみで評価
+  chord_dict: small
 
 # Hydraオーバーライド（バックボーン設定など、val_dataset.lab_dirも変更可）
-# hydra_overrides:
+hydra_overrides:
 #   - "~model.chord_conditioner.backbone"
 #   - "+model.chord_conditioner.backbone._target_=main.chord_backbones.ChordGRUBackbone"
-#   - "datamodule.val_dataset.lab_dir=/app/data/musdb_small_test"
+  - "datamodule.val_dataset.lab_dir=/app/data/musdb_small_test"
 
 # スイープ対象パラメータ
 sweep_params:
   # cfg_scale: [3.0, 5.0, 7.0, 10.0]
   # steps: [50, 100, 150]
-  cfg_scale: [0.0, 7.0, 15.0]
-  steps: [100, 250]
+  cfg_scale: [7.0]
+  steps: [100]

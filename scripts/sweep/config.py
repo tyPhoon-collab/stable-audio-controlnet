@@ -20,9 +20,9 @@ class EvalConfig:
     batch_size: int = 32
     cfg_scale: float = 7.0
     steps: int = 100
+    chord_dict: str = "submission"
 
     # 固定値（通常変更不要）
-    chord_dict: str = "submission"
     chord_frame_rate: float = 21.533203125
     clap_model_path: str = "ckpts/music_audioset_epoch_15_esc_90.14.pt"
 
@@ -159,10 +159,17 @@ def load_sweep_config(
         return value if value is not None else default
 
     eval_config = EvalConfig(
-        samples=samples if samples is not None else get_scalar(eval_params.get("samples"), 100),
-        batch_size=batch_size if batch_size is not None else get_scalar(eval_params.get("batch_size"), 32),
-        cfg_scale=cfg_scale if cfg_scale is not None else get_scalar(eval_params.get("cfg_scale"), 7.0),
+        samples=samples
+        if samples is not None
+        else get_scalar(eval_params.get("samples"), 100),
+        batch_size=batch_size
+        if batch_size is not None
+        else get_scalar(eval_params.get("batch_size"), 32),
+        cfg_scale=cfg_scale
+        if cfg_scale is not None
+        else get_scalar(eval_params.get("cfg_scale"), 7.0),
         steps=steps if steps is not None else get_scalar(eval_params.get("steps"), 100),
+        chord_dict=get_scalar(eval_params.get("chord_dict"), "submission"),
     )
 
     # 実験リストを生成

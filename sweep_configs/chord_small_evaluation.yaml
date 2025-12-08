@@ -1,0 +1,22 @@
+# maj/minのみで評価するスイープ設定
+#
+# 使用方法:
+#   bash run_sweep.sh sweep_configs/chord_small_evaluation.yaml
+#   bash run_sweep.sh sweep_configs/chord_small_evaluation.yaml --eval-only
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-chord-small
+
+# 評価パラメータで「small」辞書を指定（maj/minのみ）
+eval_params:
+  samples: 100
+  batch_size: 32
+  chord_dict: small
+
+# Hydraオーバーライド: val_dataset の lab_dir を small アノテーション用に切り替え
+hydra_overrides:
+  - "datamodule.val_dataset.lab_dir=/app/data/musdb_small_test"
+
+# 訓練パラメータ（単一実験）
+train_params:
+  model.chord_conditioner.backbone._target_: main.chord_backbones.ChordMambaBackbone

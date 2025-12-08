@@ -34,7 +34,8 @@ class EvalSweepConfig:
     batch_size: int = 16
     dry_run: bool = False
 
-    # 和音評価用の固定パラメータ
+    # 和音評価用パラメータ
+    chord_dict: str = "submission"
     chord_frame_rate: int = 10
     clap_model_path: str = "ckpts/music_audioset_epoch_15_esc_90.14.pt"
 
@@ -129,6 +130,7 @@ def load_eval_sweep_config(
     eval_params = raw.get("eval_params", {})
     samples = eval_params.get("samples", 50)
     batch_size = eval_params.get("batch_size", 16)
+    chord_dict = eval_params.get("chord_dict", "submission")
 
     # 実験を生成
     experiments = []
@@ -155,6 +157,7 @@ def load_eval_sweep_config(
         experiments=experiments,
         samples=samples,
         batch_size=batch_size,
+        chord_dict=chord_dict,
         dry_run=dry_run,
         hydra_overrides=overrides,
     )

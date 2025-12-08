@@ -177,10 +177,21 @@ for exp in experiments:
         # 2b: 和音推定（ACRコンテナ）
         log_info "  [2/3] 和音推定..."
         if [[ "$DRY_RUN" == false ]]; then
+            # 設定から和音辞書を取得
+            CHORD_DICT=$(docker exec "$MODEL_CONTAINER" python -c "
+import sys
+sys.path.insert(0, '/app')
+from scripts.sweep.config import load_sweep_config
+config = load_sweep_config('$CONFIG', '$OUTPUT_DIR')
+print(config.eval_config.chord_dict)
+" 2>/dev/null || echo "submission")
+
+            log_info "    和音辞書: $CHORD_DICT"
+
             docker exec "$ACR_CONTAINER" python batch_chord_recognition.py \
                 --input_dir "/$EXP_OUTPUT_DIR/generated" \
                 --output_dir "/$EXP_OUTPUT_DIR/predicted" \
-                --chord_dict submission
+                --chord_dict "$CHORD_DICT"
         else
             echo "  [DRY RUN] 和音推定をスキップ"
         fi

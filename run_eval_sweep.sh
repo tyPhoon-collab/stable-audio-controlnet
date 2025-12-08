@@ -125,6 +125,20 @@ log_info "評価パラメータスイープ開始"
 log_info "設定: $CONFIG"
 log_info "チェックポイント: $CKPT"
 
+# 和音辞書設定を取得
+CHORD_DICT=$(docker exec "$MODEL_CONTAINER" python -c "
+import yaml
+from pathlib import Path
+config_path = Path('$CONFIG')
+with open(config_path) as f:
+    data = yaml.safe_load(f) or {}
+if not isinstance(data, dict):
+    data = {}
+eval_params = data.get('eval_params', {}) or {}
+print(eval_params.get('chord_dict', 'submission'))
+" 2>/dev/null || echo "submission")
+log_info "使用する和音辞書: $CHORD_DICT"
+
 ###############################################################################
 # Phase 1: 音声生成
 ###############################################################################
@@ -177,10 +191,12 @@ for exp in experiments:
     # 2a: 和音推定（ACRコンテナ）
     log_info "  [1/2] 和音推定..."
     if [[ "$DRY_RUN" == false ]]; then
+        log_info "    和音辞書: $CHORD_DICT"
+
         docker exec "$ACR_CONTAINER" python batch_chord_recognition.py \
             --input_dir "/$EXP_DIR/generated" \
             --output_dir "/$EXP_DIR/predicted" \
-            --chord_dict submission
+            --chord_dict "$CHORD_DICT"
     else
         echo "  [DRY RUN] 和音推定をスキップ"
     fi
