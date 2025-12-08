@@ -163,11 +163,11 @@ class CocoMullaChordConditioner(Conditioner):
         with_bass: bool = True,
         rotate_chroma: bool = False,
         backbone: tp.Optional["ChordBackbone"] = None,
+        use_backbone: bool = True,
     ):
-        super().__init__(internal_dim, output_dim)
-
         self.with_bass = with_bass
         self.rotate_chroma = rotate_chroma
+        self.use_backbone = use_backbone
 
         # 入力次元を決定
         if with_bass:
@@ -175,17 +175,25 @@ class CocoMullaChordConditioner(Conditioner):
         else:
             self.input_dim = 25  # Root 12 + Chroma 12 + NoChord 1
 
-        # 射影層: Coco-Mulla表現 -> embed_dim
-        self.input_proj = nn.Linear(self.input_dim, embed_dim)
+        effective_internal_dim = internal_dim if use_backbone else self.input_dim
 
-        # Backboneの設定（指定がない場合はデフォルトを生成）
-        if backbone is None:
-            # デフォルトはConvBackbone (kernel_size=7, padding=3)
-            backbone = ChordConvBackbone(
-                embed_dim, internal_dim, kernel_size=7, padding=3
-            )
+        super().__init__(effective_internal_dim, output_dim)
 
-        self.backbone = backbone
+        if use_backbone:
+            # 射影層: Coco-Mulla表現 -> embed_dim
+            self.input_proj = nn.Linear(self.input_dim, embed_dim)
+
+            # Backboneの設定（指定がない場合はデフォルトを生成）
+            if backbone is None:
+                # デフォルトはConvBackbone (kernel_size=7, padding=3)
+                backbone = ChordConvBackbone(
+                    embed_dim, internal_dim, kernel_size=7, padding=3
+                )
+
+            self.backbone = backbone
+        else:
+            self.input_proj = None
+            self.backbone = None
 
         # --- 和音構成音 (Chroma) のルックアップテーブルを作成 ---
         quality_map_tensor = torch.zeros(NUM_CHORD_QUALITIES, 12)
@@ -225,8 +233,12 @@ class CocoMullaChordConditioner(Conditioner):
         batch_size, T_frames, _ = chords_data.shape
         c = torch.zeros(batch_size, T_frames, self.input_dim, device=device)
 
-        # 'no-chord' (root == -1) のフレームを特定
-        no_chord_mask = chords_data[:, :, 0] == -1  # (batch_size, T_frames)
+        roots = chords_data[:, :, 0].long()  # (batch_size, T_frames)
+        quality_idx = chords_data[:, :, 1].long()
+        bass_notes = chords_data[:, :, 2].long()
+
+        # rootもしくはqualityが-1ならno-chord扱いにする
+        no_chord_mask = (roots == -1) | (quality_idx == -1)
         chord_mask = ~no_chord_mask
 
         # 1. No-Chord フレーム
@@ -235,11 +247,6 @@ class CocoMullaChordConditioner(Conditioner):
 
         # 2. Chord フレーム
         if torch.any(chord_mask):
-            # 全データを一度にlong型に変換
-            roots = chords_data[:, :, 0].long()  # (batch_size, T_frames)
-            quality_idx = chords_data[:, :, 1].long()  # (batch_size, T_frames)
-            bass_notes = chords_data[:, :, 2].long()  # (batch_size, T_frames)
-
             # Root one-hot encoding (0-11)
             # マスク部分は-1なので、clampして0-11の範囲にしてからone-hot化
             roots_safe = roots.clamp(0, 11)
@@ -253,10 +260,11 @@ class CocoMullaChordConditioner(Conditioner):
 
             if self.with_bass:
                 # Bass one-hot encoding (12-23)
+                bass_mask = (bass_notes != -1) & chord_mask
                 bass_safe = bass_notes.clamp(0, 11)
                 bass_one_hot = F.one_hot(bass_safe, num_classes=12).float()
                 c[:, :, 12:24] = torch.where(
-                    chord_mask.unsqueeze(-1), bass_one_hot, c[:, :, 12:24]
+                    bass_mask.unsqueeze(-1), bass_one_hot, c[:, :, 12:24]
                 )
 
                 # Chroma (24-35)
@@ -344,13 +352,19 @@ class CocoMullaChordConditioner(Conditioner):
         # (batch_size, T_frames, 3) -> (batch_size, T_frames, input_dim)
         x = self.encode_chords(chords_data, target_device)
 
-        # 2. 射影層で次元を揃える
-        # (batch_size, T_frames, input_dim) -> (batch_size, T_frames, embed_dim)
-        x = self.input_proj(x)
+        if self.use_backbone:
+            assert self.input_proj is not None
+            assert self.backbone is not None
 
-        # 3. Backbone処理
-        # (batch_size, T_frames, embed_dim) -> (batch_size, T_frames, internal_dim)
-        x = self.backbone(x)
+            # 2. 射影層で次元を揃える
+            # (batch_size, T_frames, input_dim) -> (batch_size, T_frames, embed_dim)
+            x = self.input_proj(x)
+
+            # 3. Backbone処理
+            # (batch_size, T_frames, embed_dim) -> (batch_size, T_frames, internal_dim)
+            x = self.backbone(x)
+
+        # use_backbone=Falseの場合はencode結果をそのままproj_outへ通す
 
         x = self.proj_out(x)  # (batch_size, T_frames, output_dim)
 

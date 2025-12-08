@@ -41,7 +41,8 @@ model:
     output_dim: 64
     internal_dim: 32
     embed_dim: 128
-    backbone:
+    use_backbone: False
+    # backbone:
       # _target_: main.chord_backbones.ChordMlpBackbone
       # input_dim: 128
       # output_dim: 32
@@ -56,14 +57,14 @@ model:
       # output_dim: 32
       # hidden_dim: 128
       # num_layers: 2
-      _target_: main.chord_backbones.ChordMambaBackbone
-      input_dim: 128
-      output_dim: 32
-      hidden_dim: 128
-      num_layers: 2
-      d_state: 16
-      d_conv: 4
-      expand: 2
+      # _target_: main.chord_backbones.ChordMambaBackbone
+      # input_dim: 128
+      # output_dim: 32
+      # hidden_dim: 128
+      # num_layers: 2
+      # d_state: 16
+      # d_conv: 4
+      # expand: 2
       # _target_: main.chord_backbones.ChordResConvBackbone
       # input_dim: 128
       # output_dim: 32
