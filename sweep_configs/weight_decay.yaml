@@ -8,7 +8,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-wd
 
-train_params:
+parameters:
   model.lr_weight_decay:
     - 0.0
     - 1e-4

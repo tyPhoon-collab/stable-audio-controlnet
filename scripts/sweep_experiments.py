@@ -97,18 +97,49 @@ def load_sweep_config(config_path: str) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def parse_parameters_section(parameters: dict[str, Any]) -> dict[str, list[Any]]:
+    """W&B sweep形式のparametersセクションをパース
+
+    サポートする形式:
+    1. values形式: {"param": {"values": [1, 2, 3]}}
+    2. value形式（単一値）: {"param": {"value": 1}}
+    3. 直接リスト形式: {"param": [1, 2, 3]}
+    4. 直接値形式: {"param": 1}
+    """
+    result = {}
+    for key, val in parameters.items():
+        if isinstance(val, dict):
+            if "values" in val:
+                result[key] = val["values"]
+            elif "value" in val:
+                result[key] = [val["value"]]
+            else:
+                # 他のW&B形式（distribution等）は単一値として扱う
+                result[key] = [val]
+        elif isinstance(val, list):
+            result[key] = val
+        else:
+            result[key] = [val]
+    return result
+
+
 def generate_experiments(config: dict[str, Any]) -> list[ExperimentConfig]:
-    """設定からすべての実験組み合わせを生成"""
+    """設定からすべての実験組み合わせを生成
+
+    サポートする設定形式:
+    1. experiments: 個別実験定義（バックボーン比較等）
+    2. parameters: W&B sweep形式のグリッドサーチ
+    """
     experiments = []
 
     base_exp = config.get("base_exp", "train_musdb_controlnet_chord")
     base_tag = config.get("base_tag", "sweep")
     eval_params_config = config.get("eval_params", {})
 
-    # backbone_experimentsセクションがある場合はそちらを優先使用
-    backbone_experiments = config.get("backbone_experiments", None)
-    if backbone_experiments:
-        for i, exp_config in enumerate(backbone_experiments):
+    # 個別実験定義
+    explicit_experiments = config.get("experiments")
+    if explicit_experiments:
+        for i, exp_config in enumerate(explicit_experiments):
             exp_name = exp_config.get("name", f"exp_{i}")
             params = exp_config.get("params", {})
 
@@ -163,8 +194,11 @@ def generate_experiments(config: dict[str, Any]) -> list[ExperimentConfig]:
             )
         return experiments
 
-    # 通常のグリッド形式の処理
-    train_params = config.get("train_params", {})
+    # グリッド形式の処理（parameters）
+    raw_params = config.get("parameters", {})
+
+    # W&B形式のparametersをパース
+    train_params = parse_parameters_section(raw_params) if raw_params else {}
 
     # 各パラメータの値リストを取得
     param_names = list(train_params.keys())
@@ -484,23 +518,12 @@ def validate_sweep_config(config: dict[str, Any]) -> list[str]:
     """
     warnings = []
 
-    # backbone_experimentsとtrain_paramsの同時設定
-    if config.get("backbone_experiments") and config.get("train_params"):
+    # experimentsとparametersの同時設定
+    if config.get("experiments") and config.get("parameters"):
         warnings.append(
-            "backbone_experimentsとtrain_paramsの両方が設定されています。"
-            "backbone_experimentsが優先され、train_paramsは無視されます。"
+            "experimentsとparametersの両方が設定されています。"
+            "experimentsが優先され、parametersは無視されます。"
         )
-
-    # バックボーン実験の各設定をチェック
-    backbone_experiments = config.get("backbone_experiments", [])
-    for i, exp_config in enumerate(backbone_experiments):
-        params = exp_config.get("params", {})
-        target_key = "model.chord_conditioner.backbone._target_"
-        if target_key not in params:
-            warnings.append(
-                f"backbone_experiments[{i}] ({exp_config.get('name', 'unknown')}) に "
-                "backbone._target_が設定されていません"
-            )
 
     return warnings
 

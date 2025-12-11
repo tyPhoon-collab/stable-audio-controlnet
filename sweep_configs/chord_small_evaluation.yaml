@@ -18,5 +18,5 @@ hydra_overrides:
   - "datamodule.val_dataset.lab_dir=/app/data/musdb_small_test"
 
 # 訓練パラメータ（単一実験）
-train_params:
+parameters:
   model.chord_conditioner.backbone._target_: main.chord_backbones.ChordMambaBackbone

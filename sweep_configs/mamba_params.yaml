@@ -11,7 +11,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-mamba
 
-train_params:
+parameters:
   # Mambaの層数
   model.chord_conditioner.backbone.num_layers:
     - 1

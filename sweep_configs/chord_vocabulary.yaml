@@ -11,7 +11,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-vocab
 
-train_params:
+parameters:
   # 訓練データのアノテーションディレクトリ
   datamodule.train_dataset.lab_dir:
     - /app/data/musdb_small_train

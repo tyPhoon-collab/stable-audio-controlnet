@@ -12,7 +12,7 @@ base_exp: train_musdb_controlnet_chord
 base_tag: sweep-gen
 
 # 訓練パラメータは空（評価のみ）
-train_params: {}
+parameters: {}
 
 # 評価パラメータのグリッド
 eval_params:

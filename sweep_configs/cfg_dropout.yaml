@@ -9,7 +9,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-cfg-dropout
 
-train_params:
+parameters:
   model.cfg_dropout_prob:
     - 0.0
     - 0.05

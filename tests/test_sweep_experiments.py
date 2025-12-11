@@ -23,7 +23,7 @@ class TestGenerateExperiments:
         config = {
             "base_exp": "test_exp",
             "base_tag": "test",
-            "train_params": {
+            "parameters": {
                 "model.lr": [1e-4, 1e-5],
             },
             "eval_params": {
@@ -43,7 +43,7 @@ class TestGenerateExperiments:
         config = {
             "base_exp": "test_exp",
             "base_tag": "test",
-            "train_params": {
+            "parameters": {
                 "model.lr": [1e-4, 1e-5],
                 "model.depth_factor": [0.5, 0.7],
             },
@@ -59,13 +59,29 @@ class TestGenerateExperiments:
         config = {
             "base_exp": "test_exp",
             "base_tag": "test",
-            "train_params": {},
+            "parameters": {},
         }
 
         experiments = generate_experiments(config)
 
         assert len(experiments) == 1
         assert experiments[0].hydra_overrides == []
+
+    def test_wandb_sweep_format(self):
+        """W&B sweep形式のパラメータ"""
+        config = {
+            "base_exp": "test_exp",
+            "base_tag": "test",
+            "parameters": {
+                "model.loss_type": {"values": ["mse", "l1"]},
+                "model.lr": {"value": 1e-5},  # 単一値
+            },
+        }
+
+        experiments = generate_experiments(config)
+
+        # loss_type: 2, lr: 1 => 2実験
+        assert len(experiments) == 2
 
 
 class TestStatePersistence:
@@ -118,7 +134,7 @@ class TestLoadSweepConfig:
             config_data = {
                 "base_exp": "test_exp",
                 "base_tag": "test",
-                "train_params": {
+                "parameters": {
                     "model.lr": [1e-4, 1e-5],
                 },
             }
@@ -129,7 +145,7 @@ class TestLoadSweepConfig:
             loaded = load_sweep_config(str(config_path))
 
             assert loaded["base_exp"] == "test_exp"
-            assert loaded["train_params"]["model.lr"] == [1e-4, 1e-5]
+            assert loaded["parameters"]["model.lr"] == [1e-4, 1e-5]
 
 
 class TestExperimentConfig:
@@ -150,24 +166,32 @@ class TestExperimentConfig:
         assert exp.metrics == {}
 
 
-class TestBackboneComparison:
-    """バックボーン比較設定のテスト"""
+class TestExperimentsFormat:
+    """experiments形式のテスト"""
 
-    def test_backbone_config_generation(self):
-        """バックボーン比較設定から正しく実験が生成されるか"""
+    def test_experiments_config_generation(self):
+        """experiments形式から正しく実験が生成されるか"""
         config = {
             "base_exp": "train_musdb_controlnet_chord",
             "base_tag": "sweep-backbone",
-            "train_params": {
-                "model.chord_conditioner.backbone._target_": [
-                    "main.chord_backbones.ChordMambaBackbone",
-                    "main.chord_backbones.ChordGRUBackbone",
-                ],
-            },
+            "experiments": [
+                {
+                    "name": "mamba",
+                    "params": {
+                        "model.chord_conditioner.backbone._target_": "main.chord_backbones.ChordMambaBackbone",
+                    },
+                },
+                {
+                    "name": "gru",
+                    "params": {
+                        "model.chord_conditioner.backbone._target_": "main.chord_backbones.ChordGRUBackbone",
+                    },
+                },
+            ],
         }
 
         experiments = generate_experiments(config)
 
         assert len(experiments) == 2
-        assert "ChordMambaBackbone" in experiments[0].hydra_overrides[0]
-        assert "ChordGRUBackbone" in experiments[1].hydra_overrides[0]
+        assert "mamba" in experiments[0].name
+        assert "gru" in experiments[1].name

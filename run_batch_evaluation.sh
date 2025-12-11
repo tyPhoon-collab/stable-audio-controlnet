@@ -64,7 +64,7 @@ run_audio_generation() {
 
     docker exec -it "$MODEL_CONTAINER" python eval_batch.py \
         --config "$CONFIG" \
-        --ckpt "$CKPT" \
+        --ckpt "$CKPT_CONTAINER_PATH" \
         --samples "$SAMPLES" \
         --batch-size "$BATCH_SIZE" \
         --output "$OUTPUT_DIR/generated"
@@ -159,7 +159,7 @@ run_toy_audio_generation() {
     log_info "実行: docker exec -it $MODEL_CONTAINER python -m scripts.generate_toy_samples ..."
 
     docker exec -it "$MODEL_CONTAINER" python -m scripts.generate_toy_samples \
-        --checkpoint "$CKPT" \
+        --checkpoint "$CKPT_CONTAINER_PATH" \
         --output-dir "$OUTPUT_DIR/toy_generated" \
         --test-type all \
         --exp-config "$CONFIG" \
@@ -295,25 +295,30 @@ if [ -z "$CKPT" ]; then
     exit 1
 fi
 
-# コンテナ内パス(/app/...)をホストパスに変換
+# パスの正規化
 if [[ "$CKPT" == /app/* ]]; then
-    CKPT="${CKPT#/app/}"
-    log_info "チェックポイントパスを変換しました: $CKPT"
+    CKPT_HOST_PATH="${CKPT#/app/}"
+    CKPT_CONTAINER_PATH="$CKPT"
+else
+    CKPT_HOST_PATH="$CKPT"
+    CKPT_CONTAINER_PATH="/app/$CKPT"
 fi
 
 # チェックポイントの存在確認（リトライ付き）
 MAX_RETRIES=6
 RETRY_COUNT=0
-while [ ! -f "$CKPT" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    log_warning "チェックポイントが見つかりません。待機中... ($((RETRY_COUNT+1))/$MAX_RETRIES): $CKPT"
+while [ ! -f "$CKPT_HOST_PATH" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    log_warning "チェックポイントが見つかりません。待機中... ($((RETRY_COUNT+1))/$MAX_RETRIES): $CKPT_HOST_PATH"
     sleep 5
     RETRY_COUNT=$((RETRY_COUNT+1))
 done
 
-if [ ! -f "$CKPT" ]; then
-    log_error "チェックポイントファイルが存在しません: $CKPT"
+if [ ! -f "$CKPT_HOST_PATH" ]; then
+    log_error "チェックポイントファイルが存在しません: $CKPT_HOST_PATH"
     exit 1
 fi
+
+log_info "チェックポイント: $CKPT_CONTAINER_PATH"
 
 # 出力ディレクトリを日付でネストさせる
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
@@ -329,7 +334,7 @@ print_box_header "       和音推定を含むバッチ評価（ホスト側実�
 # 設定情報を表示
 echo -e "${BLUE}=== 設定情報 ===${NC}"
 echo "実験設定: $CONFIG"
-echo "チェックポイント: $CKPT"
+echo "チェックポイント: $CKPT_CONTAINER_PATH"
 echo "サンプル数: $SAMPLES"
 echo "バッチサイズ: $BATCH_SIZE"
 echo "出力ディレクトリ: $OUTPUT_DIR"

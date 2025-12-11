@@ -18,7 +18,7 @@ eval_params:
 
 # バックボーン比較実験
 # 各バックボーンごとに専用パラメータを設定
-backbone_experiments:
+experiments:
   - name: mamba
     params:
       model.chord_conditioner.backbone._target_: main.chord_backbones.ChordMambaBackbone

@@ -9,7 +9,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-dims
 
-train_params:
+parameters:
   # output_dim: ControlNetへの最終出力次元
   model.chord_conditioner.output_dim:
     - 32

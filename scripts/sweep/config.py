@@ -193,17 +193,47 @@ def load_sweep_config(
     return config
 
 
+def _parse_parameters_section(parameters: dict[str, Any]) -> dict[str, list[Any]]:
+    """W&B sweep形式のparametersセクションをパース
+
+    サポートする形式:
+    1. values形式: {"param": {"values": [1, 2, 3]}}
+    2. value形式（単一値）: {"param": {"value": 1}}
+    3. 直接リスト形式: {"param": [1, 2, 3]}
+    4. 直接値形式: {"param": 1}
+    """
+    result = {}
+    for key, val in parameters.items():
+        if isinstance(val, dict):
+            if "values" in val:
+                result[key] = val["values"]
+            elif "value" in val:
+                result[key] = [val["value"]]
+            else:
+                result[key] = [val]
+        elif isinstance(val, list):
+            result[key] = val
+        else:
+            result[key] = [val]
+    return result
+
+
 def _generate_experiments(raw_config: dict[str, Any]) -> list[Experiment]:
-    """設定から実験リストを生成"""
+    """設定から実験リストを生成
+
+    サポートする設定形式:
+    1. experiments: 個別実験定義（バックボーン比較等）
+    2. parameters: W&B sweep形式のグリッドサーチ
+    """
     experiments = []
 
     base_exp = raw_config.get("base_exp", "train_musdb_controlnet_chord")
     base_tag = raw_config.get("base_tag", "sweep")
 
-    # backbone_experiments形式
-    backbone_experiments = raw_config.get("backbone_experiments", [])
-    if backbone_experiments:
-        for i, exp_config in enumerate(backbone_experiments):
+    # experiments形式（個別実験定義）
+    explicit_experiments = raw_config.get("experiments", [])
+    if explicit_experiments:
+        for i, exp_config in enumerate(explicit_experiments):
             exp_name = exp_config.get("name", f"exp_{i}")
             params = exp_config.get("params", {})
 
@@ -222,11 +252,12 @@ def _generate_experiments(raw_config: dict[str, Any]) -> list[Experiment]:
             )
         return experiments
 
-    # train_params形式（グリッドサーチ）
-    train_params = raw_config.get("train_params", {})
-    if train_params:
+    # parameters形式（グリッドサーチ）
+    raw_params = raw_config.get("parameters", {})
+    if raw_params:
         from itertools import product
 
+        train_params = _parse_parameters_section(raw_params)
         param_names = list(train_params.keys())
         param_values = [
             v if isinstance(v, list) else [v] for v in train_params.values()

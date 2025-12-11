@@ -1,0 +1,45 @@
+# 損失関数のグリッドサーチ用設定
+#
+# 使用方法:
+#   bash run_sweep.sh sweep_configs/loss_function_grid_search.yaml
+#
+# W&B sweep形式の parameters セクションをサポートしています。
+
+base_exp: train_musdb_controlnet_chord
+base_tag: sweep-loss
+
+# グリッドサーチするパラメータ（W&B sweep形式）
+parameters:
+  model.loss_type:
+    values:
+      - mse
+      - smooth_l1
+      - l1
+      - huber
+
+# 注意: 上記は4つの実験を生成します。
+# loss_params.beta や loss_params.delta は loss_type に応じて
+# 個別に設定する必要がある場合は experiments 形式を使用してください。
+
+# 評価パラメータ
+eval_params:
+  cfg_scale: [7.0]
+  steps: [100]
+  samples: 50
+  batch_size: 16
+
+# --- 代替形式: experiments を使って個別設定 ---
+# experiments:
+#   - name: mse
+#     params:
+#       model.loss_type: mse
+#
+#   - name: smooth_l1_beta0.5
+#     params:
+#       model.loss_type: smooth_l1
+#       model.loss_params.beta: 0.5
+#
+#   - name: huber_delta1.0
+#     params:
+#       model.loss_type: huber
+#       model.loss_params.delta: 1.0

@@ -10,6 +10,7 @@ from stable_audio_tools.models.conditioners import Conditioner
 from torch.utils.data import DataLoader
 
 from main.controlnet.pretrained import get_pretrained_controlnet_model
+from main.loss_functions import create_loss_function
 from main.notifier import get_notifier
 from main.utils import log_wandb_audio_batch, log_wandb_audio_spectrogram
 
@@ -46,6 +47,10 @@ class Model(pl.LightningModule):
         depth_factor: float,
         cfg_dropout_prob: float,
         chord_frame_rate: float,
+        # Loss function parameters
+        loss_type: str = "mse",
+        loss_reduction: str = "mean",
+        loss_params: dict | None = None,
         # Transform parameters
         train_transform: BatchTransform | None = None,
         eval_transform: BatchTransform | None = None,
@@ -91,6 +96,14 @@ class Model(pl.LightningModule):
         self.model.pretransform.requires_grad_(False)
         self.model.pretransform.eval()
 
+        # === Loss Function Configuration ===
+        loss_params = loss_params or {}
+        self.loss_fn = create_loss_function(
+            loss_type=loss_type,
+            reduction=loss_reduction,
+            **loss_params,
+        )
+
         # === Transform Configuration ===
         self.train_transform = train_transform or Identity()
         self.eval_transform = eval_transform or Identity()
@@ -105,6 +118,9 @@ class Model(pl.LightningModule):
                 "depth_factor": depth_factor,
                 "cfg_dropout_prob": cfg_dropout_prob,
                 "chord_frame_rate": chord_frame_rate,
+                "loss_type": loss_type,
+                "loss_reduction": loss_reduction,
+                "loss_params": loss_params,
             }
         )
 
@@ -210,7 +226,7 @@ class Model(pl.LightningModule):
             ),
             cfg_dropout_prob=self.cfg_dropout_prob,
         )
-        loss = torch.nn.functional.mse_loss(output, targets).mean()
+        loss = self.loss_fn(output, targets)
         return loss
 
     def training_step(self, batch, batch_idx):

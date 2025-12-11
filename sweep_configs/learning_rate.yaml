@@ -6,7 +6,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-lr
 
-train_params:
+parameters:
   model.lr:
     - 1e-4
     - 5e-5

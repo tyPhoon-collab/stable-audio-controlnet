@@ -11,7 +11,7 @@
 base_exp: train_musdb_controlnet_chord
 base_tag: sweep-repr
 
-train_params:
+parameters:
   model.chord_conditioner._target_:
     - main.chord_conditioner.EmbeddingChordConditioner
     - main.chord_conditioner.SeparatedEmbeddingChordConditioner

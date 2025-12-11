@@ -23,6 +23,12 @@ model:
   cfg_dropout_prob: 0.1
   depth_factor: 0.5
   chord_frame_rate: ${chord_frame_rate}
+  # Loss function configuration
+  loss_type: mse  # Options: mse, smooth_l1, l1, huber
+  loss_reduction: mean  # Options: mean, sum, none
+  # loss_params:  # Optional parameters for specific loss functions
+  #   beta: 1.0  # For smooth_l1
+  #   delta: 1.0  # For huber
   train_transform:
     _target_: main.data.transforms.create_chord_training_transform
     csv_path: "/app/data/description.csv"
@@ -41,8 +47,8 @@ model:
     output_dim: 64
     internal_dim: 32
     embed_dim: 128
-    use_backbone: False
-    # backbone:
+    # use_backbone: False
+    backbone:
       # _target_: main.chord_backbones.ChordMlpBackbone
       # input_dim: 128
       # output_dim: 32
@@ -57,14 +63,14 @@ model:
       # output_dim: 32
       # hidden_dim: 128
       # num_layers: 2
-      # _target_: main.chord_backbones.ChordMambaBackbone
-      # input_dim: 128
-      # output_dim: 32
-      # hidden_dim: 128
-      # num_layers: 2
-      # d_state: 16
-      # d_conv: 4
-      # expand: 2
+      _target_: main.chord_backbones.ChordMambaBackbone
+      input_dim: 128
+      output_dim: 32
+      hidden_dim: 128
+      num_layers: 2
+      d_state: 16
+      d_conv: 4
+      expand: 2
       # _target_: main.chord_backbones.ChordResConvBackbone
       # input_dim: 128
       # output_dim: 32
@@ -151,7 +157,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 30
+  max_epochs: 10
   enable_model_summary: False
   log_every_n_steps: 1 # Logs metrics every N batches
   check_val_every_n_epoch: null
