@@ -60,6 +60,10 @@ class DiTControlNetWrapper(ConditionedDiffusionModel):
         self.model = DiffusionTransformer(*args, **kwargs)
         kwargs["depth"] = int(controlnet_depth_factor * kwargs["depth"])
         self.controlnet = ControlNetDiffusionTransformer(*args, **kwargs)
+
+        # Initialize ControlNet weights from the base model
+        self.controlnet.load_state_dict(self.model.state_dict(), strict=False)
+
         # with torch.no_grad():
         #     for param in self.model.parameters():
         #        param *= 0.5
