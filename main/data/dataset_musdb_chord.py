@@ -14,7 +14,7 @@ from .common_mapping import DescriptionMapping, GenreMapping
 
 
 def _fn_resample(sample, sample_rate):
-    stems, sample_rate_orig, sample_key = sample
+    stems, sample_rate_orig, sample_key, lab_content = sample
     return (
         {
             stem: resample(track, orig_freq=sample_rate_orig, new_freq=sample_rate)
@@ -22,6 +22,7 @@ def _fn_resample(sample, sample_rate):
         },
         sample_rate,
         sample_key,
+        lab_content,
     )
 
 
@@ -45,6 +46,7 @@ def _fn_extract_stems_and_pad(sample):
 
     # サンプル名を取得（__key__が利用可能な場合）
     sample_key = sample.get("__key__", "unknown")
+    lab_content = sample.get("lab", None)
 
     stems = {
         k.split(".")[0]: F.pad(v[0], (0, max_len - v[0].shape[-1]))
@@ -52,11 +54,11 @@ def _fn_extract_stems_and_pad(sample):
         if (k.endswith(".mp3") or k.endswith(".wav"))
     }
 
-    return stems, default_sr, sample_key
+    return stems, default_sr, sample_key, lab_content
 
 
 def _fn_add_chord_annotations(
-    sample, sample_key, chord_frame_rate, sample_rate=44100, lab_dir=None
+    sample, sample_key, chord_frame_rate, sample_rate=44100, lab_dir=None, lab_content=None
 ):
     """和音アノテーションを追加する関数"""
     stems, sr = sample
@@ -71,20 +73,30 @@ def _fn_add_chord_annotations(
 
     # .labファイルから実際の和音アノテーションを読み込み
     try:
-        # sample_keyから.labファイルのパスを構築
-        if lab_dir is not None:
-            lab_file_path = os.path.join(lab_dir, f"{sample_key}.lab")
-        else:
-            raise ValueError("lab_dir is required for chord annotation")
+        chord_annotator = ChordAnnotation(sample_rate=sr)
+        annotations = []
+        loaded = False
 
-        if os.path.exists(lab_file_path):
-            chord_annotator = ChordAnnotation(sample_rate=sr)
-            annotations = chord_annotator.load_lab_file(lab_file_path)
+        # Priority 1: Embedded content
+        if lab_content is not None:
+            if isinstance(lab_content, bytes):
+                lab_content = lab_content.decode("utf-8")
+            annotations = chord_annotator.load_lab_content(lab_content)
+            loaded = True
+
+        # Priority 2: Disk file
+        elif lab_dir is not None:
+            lab_file_path = os.path.join(lab_dir, f"{sample_key}.lab")
+            if os.path.exists(lab_file_path):
+                annotations = chord_annotator.load_lab_file(lab_file_path)
+                loaded = True
+            else:
+                 print(f"Warning: .lab file not found: {lab_file_path}")
+
+        if loaded:
             chord_tensor = chord_annotator.create_chord_tensor(
                 annotations, audio_length, frame_rate=chord_frame_rate
             )
-        else:
-            print(f"Warning: .lab file not found: {lab_file_path}")
     except Exception as e:
         print(f"Error: Failed to load chord annotation for {sample_key}: {e}")
         raise e  # 和音は必須なのでエラーを再発生
@@ -94,8 +106,8 @@ def _fn_add_chord_annotations(
 
 def _apply_chord_annotations(sample, fn_add_chords):
     """和音アノテーションを適用するためのモジュールレベル関数"""
-    stems, sr, sample_key = sample
-    stems_with_chords, sr, chord_tensor = fn_add_chords((stems, sr), sample_key)
+    stems, sr, sample_key, lab_content = sample
+    stems_with_chords, sr, chord_tensor = fn_add_chords((stems, sr), sample_key, lab_content=lab_content)
     return stems_with_chords, sr, chord_tensor, sample_key
 
 
@@ -125,7 +137,7 @@ def _get_slices(src, chunk_dur, chord_frame_rate=25.0):
             start_s = start_idx / sr
 
             chunks = {
-                stem: track[:, start_idx:end_idx] for stem, track in stems.items()
+                stem: track[:, start_idx:end_idx].clone() for stem, track in stems.items()
             }
 
             chunks = {

@@ -245,7 +245,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --config)
-            CONFIG="$2"
+            CONFIG=$(basename "$2" .yaml)
             shift 2
             ;;
         --samples)

@@ -286,7 +286,7 @@ class WebDatasetDatamodule(pl.LightningDataModule):
         self.shuffle_size = shuffle_size
         self.drop_last = drop_last
         self.persistent_workers = persistent_workers
-        self.multiprocessing_context = multiprocessing_context
+        self.multiprocessing_context = multiprocessing_context if num_workers > 0 else None
 
         train_dataset = train_dataset.shuffle(self.shuffle_size)
 

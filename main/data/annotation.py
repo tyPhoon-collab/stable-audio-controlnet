@@ -22,6 +22,7 @@ CHROMATIC_SCALE = [
 
 _PREFERRED_ROOT_NAMES = {
     10: "Bb",
+    25: "Bb",
 }
 
 QUALITY_NAMES = [
@@ -115,30 +116,41 @@ CHORD_ONEHOT_DIM = CHORD_ROOT_BINS + CHORD_QUALITY_BINS + CHORD_INVERSION_BINS
 LabAnnotation = Tuple[float, float, str]
 
 
+def parse_lab_content(content: str) -> List[LabAnnotation]:
+    """Lab形式の文字列からアノテーションをパースする"""
+    annotations: List[LabAnnotation] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            start = float(parts[0])
+            end = float(parts[1])
+        except ValueError:
+            continue
+        label = " ".join(parts[2:]).strip()
+        if not label:
+            label = "N"
+        annotations.append((start, end, label))
+    return annotations
+
+
 def load_lab_annotations(path: Path | str) -> List[LabAnnotation]:
     """Labファイルから和音アノテーションを読み込む"""
     lab_path = Path(path)
-    annotations: List[LabAnnotation] = []
     if not lab_path.exists():
         raise FileNotFoundError(f"Lab file not found: {lab_path}")
-    with lab_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            try:
-                start = float(parts[0])
-                end = float(parts[1])
-            except ValueError:
-                continue
-            label = " ".join(parts[2:]).strip()
-            if not label:
-                label = "N"
-            annotations.append((start, end, label))
-    return annotations
+
+    try:
+        content = lab_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        with lab_path.open("r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+    return parse_lab_content(content)
 
 
 def normalize_root(root: str) -> str:
@@ -380,6 +392,18 @@ class ChordAnnotation:
             [(start_time, end_time, chord_symbol), ...] のリスト
         """
         return load_lab_annotations(lab_file_path)
+
+    def load_lab_content(self, content: str) -> List[Tuple[float, float, str]]:
+        """
+        .lab形式の文字列を読み込んで時間区間と和音のリストを返す
+
+        Args:
+            content: .labファイルの内容
+
+        Returns:
+            [(start_time, end_time, chord_symbol), ...] のリスト
+        """
+        return parse_lab_content(content)
 
     def create_chord_tensor(
         self,

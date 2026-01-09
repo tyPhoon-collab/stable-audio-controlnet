@@ -1,0 +1,134 @@
+# @package _global_
+
+train: True
+sample_rate: 44100  # Model expects 44.1kHz
+chunk_dur: 47.55446713
+chord_frame_rate: 21.533203125
+
+log_every_n_steps: 200
+
+# データ拡張パラメータ
+augmentation:
+  pitch_shift_p: 0
+  gain_augment_p: 0
+  drop_vocals: True
+
+model:
+  _target_: main.module_controlnet_chord.Model
+  lr: 5e-6
+  lr_beta1: 0.95
+  lr_beta2: 0.999
+  lr_eps: 1e-6
+  lr_weight_decay: 1e-3
+  cfg_dropout_prob: 0.1
+  depth_factor: 0.5
+  chord_frame_rate: ${chord_frame_rate}
+  # Loss function configuration
+  loss_type: mse
+  loss_reduction: mean
+  train_transform:
+    _target_: main.data.transforms.create_chord_training_transform
+    # Description CSV is not available for Slakh yet, but transform requires it if used for text prompt
+    # Here we might need a simpler transform or just use empty prompts
+    # For now pointing to existing one even if unused, or nullify
+    csv_path: null
+    drop_vocals: ${augmentation.drop_vocals}
+    pitch_shift_p: ${augmentation.pitch_shift_p}
+    gain_augment_p: ${augmentation.gain_augment_p}
+    sample_rate: ${sample_rate}
+  eval_transform:
+    _target_: main.data.transforms.create_chord_eval_transform
+    csv_path: null
+    drop_vocals: ${augmentation.drop_vocals}
+  chord_conditioner:
+    _target_: main.chord_conditioner.CocoMullaChordConditioner
+    output_dim: 64
+    internal_dim: 32
+    embed_dim: 128
+    backbone:
+      _target_: main.chord_backbones.ChordMambaBackbone
+      input_dim: 128
+      output_dim: 32
+      hidden_dim: 128
+      num_layers: 2
+      d_state: 16
+      d_conv: 4
+      expand: 2
+
+datamodule:
+  _target_: main.module_controlnet_chord.WebDatasetDatamodule
+  train_dataset:
+    _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
+    path: /app/data/slakh_wds/train/slakh-{000000..000038}.tar
+    lab_dir: /app/data/slakh_labels_redux
+    sample_rate: ${sample_rate}
+    chunk_dur: ${chunk_dur}
+    chord_frame_rate: ${chord_frame_rate}
+    shardshuffle: True
+
+  val_dataset:
+    _target_: main.data.dataset_musdb_chord.create_musdb_dataset_with_chords
+    path: /app/data/slakh_wds/validation/slakh-{000000..000007}.tar
+    lab_dir: /app/data/slakh_labels_redux
+    sample_rate: ${sample_rate}
+    chunk_dur: ${chunk_dur}
+    chord_frame_rate: ${chord_frame_rate}
+    shardshuffle: False
+
+  shuffle_size: 10
+  batch_size_train: 1
+  batch_size_val: 1
+  collate_fn:
+    _target_: main.data.dataset_musdb_chord.collate_fn_stems
+    _partial_: True
+  drop_last: True
+  num_workers: 0
+  pin_memory: False
+  persistent_workers: False
+
+callbacks:
+  rich_progress_bar:
+    _target_: pytorch_lightning.callbacks.TQDMProgressBar
+
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: "valid_loss"
+    save_top_k: 2
+    save_last: True
+    mode: "min"
+    verbose: False
+    dirpath: ${logs_dir}/ckpts/${oc.env:TAG}_${now:%Y-%m-%d-%H-%M-%S}
+    filename: "{epoch:02d}-{valid_loss:.3f}"
+
+  model_summary:
+    _target_: pytorch_lightning.callbacks.RichModelSummary
+    max_depth: 2
+
+  audio_samples_logger:
+    _target_: main.module_controlnet_chord.SampleLogger
+    sampling_steps: [20]
+    cfg_scale: 7.0
+    num_samples: 2
+    frame_rate: ${chord_frame_rate}
+
+loggers:
+  wandb:
+    _target_: pytorch_lightning.loggers.wandb.WandbLogger
+    project: ${oc.env:WANDB_PROJECT}
+    entity: ${oc.env:WANDB_ENTITY}
+    job_type: "train"
+    group: ""
+    save_dir: ${logs_dir}
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  devices: 1
+  precision: 16
+  accelerator: gpu
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  min_epochs: 0
+  max_epochs: 5
+  enable_model_summary: False
+  log_every_n_steps: 50
+  check_val_every_n_epoch: null

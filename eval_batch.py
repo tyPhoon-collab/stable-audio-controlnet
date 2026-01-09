@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import hydra
+from omegaconf import open_dict
 import torch
 from stable_audio_tools.inference.generation import generate_diffusion_cond
 
@@ -65,7 +66,6 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         required=True,
-        choices=["train_musdb_controlnet_chord"],
         help="実験設定ファイル名 (chord)",
     )
     parser.add_argument(
@@ -178,9 +178,10 @@ def _load_model_and_config(config: EvalConfig) -> tuple[Any, Any]:
         # "terminate called without an active exception" が発生することがあるため、
         # 強制的にシングルプロセス実行とする
         # 推論時は dataloader の並列化はあまり効果がないため問題ない
-        cond_cfg["datamodule"]["num_workers"] = 0
-        cond_cfg["datamodule"]["persistent_workers"] = False
-        cond_cfg["datamodule"]["multiprocessing_context"] = None
+        with open_dict(cond_cfg["datamodule"]):
+            cond_cfg["datamodule"]["num_workers"] = 0
+            cond_cfg["datamodule"]["persistent_workers"] = False
+            cond_cfg["datamodule"]["multiprocessing_context"] = None
         logger.info(
             "クラッシュ回避のため、num_workers=0, persistent_workers=False, multiprocessing_context=None に設定しました"
         )
