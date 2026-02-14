@@ -11,7 +11,7 @@ log_every_n_steps: 200
 augmentation:
   pitch_shift_p: 0
   gain_augment_p: 0
-  drop_vocals: True
+  drop_vocals: False
 
 model:
   _target_: main.module_controlnet_chord.Model
@@ -36,10 +36,21 @@ model:
     pitch_shift_p: ${augmentation.pitch_shift_p}
     gain_augment_p: ${augmentation.gain_augment_p}
     sample_rate: ${sample_rate}
+    # include_stems: null # null means use all stems (filtered by drop_vocals)
+    # 4つのケースの例 (Use augmentation.drop_vocals: False for these if including vocals)
+    # 1. Melody + Others
+    # include_stems: ["vocals", "other"]
+    # 2. Bass + Others
+    # include_stems: ["bass", "other"]
+    # 3. Melody + Bass
+    include_stems: ["vocals", "bass"]
+    # 4. Melody + Bass + Other
+    # include_stems: ["vocals", "bass", "other"]
   eval_transform:
     _target_: main.data.transforms.create_chord_eval_transform
     csv_path: null
     drop_vocals: ${augmentation.drop_vocals}
+    include_stems: ${model.train_transform.include_stems}
   chord_conditioner:
     _target_: main.chord_conditioner.CocoMullaChordConditioner
     output_dim: 64
@@ -128,7 +139,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
   min_epochs: 0
-  max_epochs: 5
+  max_epochs: 10
   enable_model_summary: False
-  log_every_n_steps: 50
+  log_every_n_steps: 2
   check_val_every_n_epoch: null

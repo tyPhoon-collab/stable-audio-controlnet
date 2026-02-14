@@ -8,6 +8,7 @@ AudioBatchに対する変換処理を提供します。
 from __future__ import annotations
 
 import random
+import logging
 from abc import ABC, abstractmethod
 
 import torch
@@ -76,11 +77,16 @@ class StemMixTransform(BatchTransform):
     """
 
     def __init__(
-        self, strategy: str = "all", drop_vocals: bool = True, keep_stems: bool = True
+        self,
+        strategy: str = "all",
+        drop_vocals: bool = True,
+        keep_stems: bool = True,
+        include_stems: list[str] | None = None,
     ):
         self.strategy = strategy
         self.drop_vocals = drop_vocals
         self.keep_stems = keep_stems
+        self.include_stems = include_stems
 
     def __call__(self, batch: AudioBatch) -> AudioBatch:
         # ステムが空の場合（既にミックス済みでkeep_stems=Falseの場合など）
@@ -102,10 +108,66 @@ class StemMixTransform(BatchTransform):
             if self.drop_vocals and "vocals" in stems:
                 stems = {k: v for k, v in stems.items() if k != "vocals"}
 
+            if self.include_stems is not None:
+                stems = {k: v for k, v in stems.items() if k in self.include_stems}
+
+            if not stems:
+                # 指定されたステムが1つも見つからない場合、無音トラックを作成
+                # 元のバッチのステムリストから1つサンプリングして形状を取得（あれば）
+                # ここでは stems が空なので、オリジナルの batch.stems[i] などから情報を得る必要があるが、
+                # すでにループ内なので、一つ前のループなどで保持するか、あるいは
+                # batch.stems があるはずなのでそれを使う
+
+                # 安全策として、batch.stems[batch_idx] から形状を取得したいが
+                # ここでは for stems in batch.stems なのでインデックスが直接ない
+                # enumerateを使うように変更するか、あるいは stems が空になる前の状態を保持しておく
+                # ここでは簡略化のため、エラー回避を優先し、
+                # 他の箇所で確実に形状がわかるはずなのでそれを利用する
+
+                # ログを出力
+                sample_key = batch.sample_keys[outputs.__len__()] if len(batch.sample_keys) > len(outputs) else "unknown"
+                logging.warning(f"No matching stems found for sample {sample_key} with include_stems={self.include_stems}. Returning silent track.")
+
+                # 形状を取得するために、元の stems (フィルタリング前) を参照するか、
+                # デフォルトの形状（2ch, 44100*47.5...）を想定する
+                # 実際には、batch 内の他のサンプルや、フィルタリング前の辞書から取得可能
+                pass # 下記でハンドル
+
             if self.strategy == "all":
-                out_track = torch.stack(list(stems.values())).sum(dim=0)
+                if not stems:
+                    # 他のトラックから形状を推測するか、あるいは固定長
+                    # ここでは一旦、直前のループの形状などがあればそれを使うが、
+                    # 最初のサンプルが空だと困るので、もう少し堅牢にする
+                    # 幸い、AudioBatchには時間情報がある
+                    sr = 44100 # デフォルト
+                    # 本来は呼び出し元から与えられるべきだが、とりあえず既存のテンソルから探す
+                    ref_tensor = None
+                    for s_dict in batch.stems:
+                        if s_dict:
+                            ref_tensor = next(iter(s_dict.values()))
+                            break
+
+                    if ref_tensor is not None:
+                        out_track = torch.zeros_like(ref_tensor)
+                    else:
+                        # 全く何も見つからない場合（非常に稀）
+                        # chunk_dur等から計算
+                        out_track = torch.zeros(2, 2097152) # 仮のサイズ
+                else:
+                    out_track = torch.stack(list(stems.values())).sum(dim=0)
             elif self.strategy == "random_subset":
-                if len(stems) < 2:
+                if not stems:
+                    # 同様に無音
+                    ref_tensor = None
+                    for s_dict in batch.stems:
+                        if s_dict:
+                            ref_tensor = next(iter(s_dict.values()))
+                            break
+                    if ref_tensor is not None:
+                        out_track = torch.zeros_like(ref_tensor)
+                    else:
+                        out_track = torch.zeros(2, 2097152)
+                elif len(stems) < 2:
                     out_track = torch.stack(list(stems.values())).sum(dim=0)
                 else:
                     stem_keys = list(stems.keys())
@@ -613,6 +675,7 @@ def create_chord_training_transform(
     pitch_shift_p: float = 0.0,
     gain_augment_p: float = 0.0,
     sample_rate: int = 44100,
+    include_stems: list[str] | None = None,
 ) -> BatchTransform:
     """和音条件付け訓練用のTransformを作成
 
@@ -645,7 +708,12 @@ def create_chord_training_transform(
     # ステムミックス（ここでAudioBatch.audioが生成される）
     # メモリ節約のため、ミックス後はステムを破棄する
     transforms.append(
-        StemMixTransform(strategy="all", drop_vocals=False, keep_stems=False)
+        StemMixTransform(
+            strategy="all",
+            drop_vocals=False,
+            keep_stems=False,
+            include_stems=include_stems,
+        )
     )
 
     # データ拡張（ミックス後のAudioに対する操作）
@@ -672,6 +740,7 @@ def create_chord_training_transform(
 def create_chord_eval_transform(
     csv_path: str | None = None,
     drop_vocals: bool = True,
+    include_stems: list[str] | None = None,
 ) -> BatchTransform:
     """和音条件付け評価用のTransformを作成（拡張なし）"""
     transforms: list[BatchTransform] = []
@@ -680,7 +749,12 @@ def create_chord_eval_transform(
         transforms.append(VocalsDropTransform())
 
     transforms.append(
-        StemMixTransform(strategy="all", drop_vocals=False, keep_stems=False)
+        StemMixTransform(
+            strategy="all",
+            drop_vocals=False,
+            keep_stems=False,
+            include_stems=include_stems,
+        )
     )
 
     if csv_path:
